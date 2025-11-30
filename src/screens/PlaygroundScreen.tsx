@@ -27,7 +27,7 @@ import {
   applyLandlordDiscard,
 } from '@/src/game';
 import { isTrump, getEffectiveSuit, getLeadingSuit, cardStrength, getCardPoints, isFixedTrump, isFanTrump, isJTrump, is2Trump } from '@/src/game/rules';
-import { Suit, GameConfig, HandScores, TrickResult, GamePhase } from '@/src/game/types';
+import { Suit, GameConfig, HandScores, TrickResult, GamePhase, HistoryEvent } from '@/src/game/types';
 import { validateRuiPaiSelection } from '@/src/game/ruiPaiValidation';
 import CardView from '@/src/components/CardView';
 
@@ -963,6 +963,16 @@ export default function PlaygroundScreen() {
       setIsDealing(false);
       setIsDingZhuPhase(needsDingZhuChoice);
       
+      // CRITICAL: If AI player is dealer, set bottom selection phase so they can discard bottom cards
+      // This ensures AI dealers go through bottom card discard step
+      if (!needsDingZhuChoice && dealerIndex !== 0) {
+        setIsBottomSelectionPhase(true);
+        console.log("[DEALING_COMPLETE] AI dealer detected, setting isBottomSelectionPhase=true", {
+          dealerIndex,
+          trumpSuit,
+        });
+      }
+      
       console.log("[DEALING_COMPLETE] gameState created, isDealing=false, isDingZhuPhase=", needsDingZhuChoice);
       
       return;
@@ -978,6 +988,24 @@ export default function PlaygroundScreen() {
       newHands[playerIndex] = [...newHands[playerIndex], card];
       
       setDealingHands(newHands);
+      
+      // Check for 三反/五反 eligibility during dealing (only for player 0, before bottom discard)
+      // Rule: 在主家扣完底牌之前，起到三个3或者三个5,可以亮为三反或五反
+      if (playerIndex === 0 && !isBottomSelectionPhase) {
+        const player0Hand = newHands[0];
+        const rank3Count = player0Hand.filter(c => c.rank === 3).length;
+        const rank5Count = player0Hand.filter(c => c.rank === 5 && c.suit !== '♦').length; // Exclude ♦5
+        
+        // Update fan eligibility
+        setCanThreeFan(rank3Count >= 3);
+        setCanFiveFan(rank5Count >= 3);
+        
+        // If player has enough cards for fan, show pre-fan phase
+        // But only if we're still in dealing phase (before bottom selection)
+        if ((rank3Count >= 3 || rank5Count >= 3) && isDealing) {
+          setIsPreFanPhase(true);
+        }
+      }
       
       // Check if this card is a DingZhu candidate (rank 2, non-joker)
       const isDingZhuCandidate = card.rank === 2 && card.suit !== 'JOKER';
@@ -1074,6 +1102,9 @@ export default function PlaygroundScreen() {
             setTimeout(() => {
               setDingZhuToastVisible(false);
             }, 2500);
+            
+            // CRITICAL: If AI player becomes dealer, we'll set isBottomSelectionPhase after dealing completes
+            // This is handled in the dealing complete logic
             
             // Continue dealing (no more DingZhu prompts)
             setDealingIndex(prev => prev + 1);
@@ -1450,22 +1481,24 @@ export default function PlaygroundScreen() {
         trumpSuit: newTrumpSuit,
       },
       finalBottomCards: [],
-      phase: 'DISCARD_BOTTOM', // Explicit phase: landlord must discard bottom cards
+      phase: 'PLAY_TRICK', // SIMPLIFIED: Go directly to play phase, first trick is bottom card play
       landlordId: finalPlayers[newDealerIndex].id, // Explicit landlord ID
       landlordDiscardSelection: [], // Initialize empty selection
+      tricks: [], // Start with empty tricks array (first trick will be bottom card play)
+      currentTrick: [], // Start with empty current trick
     };
 
-    // CRITICAL: Set currentPlayerIndex to dealer BEFORE setting gameState
-    // This ensures the state is correct when bottom selection phase starts
-    const updatedGameWithDealerAsCurrent: GameState = {
-      ...updatedGame,
-      currentPlayerIndex: newDealerIndex, // Set dealer as current player for bottom selection
-    };
-    setGameState(updatedGameWithDealerAsCurrent);
-    
-    // CRITICAL: Clear DingZhu phase BEFORE entering bottom selection
+    // CRITICAL: Update state in correct order to ensure phase and flags are set correctly
+    // First, clear DingZhu phase and set bottom selection phase
     setIsDingZhuPhase(false);
+    setIsBottomSelectionPhase(true); // Enable bottom card selection
+    setIsBottomRevealPhase(false);
+    setIsPreFanPhase(false);
+    setSelectedBottomCards([]); // Clear any old selection
     setIsFirstGame(false); // After first game, dealer persists
+
+    // Then set game state - dealer leads the first trick (which is bottom card play)
+    setGameState(updatedGame);
 
     // Show toast notification for ding-zhu decision
     const dingZhuPlayer = chooseDingZhu ? firstTwoCandidate.playerIndex : 0;
@@ -1477,42 +1510,14 @@ export default function PlaygroundScreen() {
     setTimeout(() => {
       setDingZhuToastVisible(false);
     }, 2500);
-
-    // After 定主, enter bottom selection phase
-    // RESTORED: Simple logic - always enter bottom selection phase after dealer is determined
-    // IMPORTANT: Ensure isDingZhuPhase is false before entering bottom selection
-    console.log("[ENTER_BOTTOM_SELECTION] Transitioning to bottom selection", {
-      isDingZhuPhase: false, // Should be false now
+    
+    console.log("[ENTER_BOTTOM_SELECTION] Phase set to PLAY_TRICK, isBottomSelectionPhase = true", {
+      phase: 'PLAY_TRICK',
       dealerIndex: newDealerIndex,
-      currentPlayerIndex: newDealerIndex, // Should match dealer
+      currentPlayerIndex: newDealerIndex,
       isBottomSelectionPhase: true,
-      localPlayerId: 0,
-      isHumanDealer: newDealerIndex === 0,
-      phase: 'DISCARD_BOTTOM', // Explicit phase
-      gameStatePhase: updatedGameWithDealerAsCurrent.phase,
+      isDingZhuPhase: false,
     });
-    
-    // CRITICAL: Update gameState with DISCARD_BOTTOM phase FIRST
-    // This ensures the phase is set before setting state variables
-    const finalGameStateWithPhase: GameState = {
-      ...updatedGameWithDealerAsCurrent,
-      phase: 'DISCARD_BOTTOM', // CRITICAL: Ensure phase is set to DISCARD_BOTTOM
-    };
-    setGameState(finalGameStateWithPhase);
-    
-    // CRITICAL: Set bottom selection phase - this must happen for both human and bot landlords
-    setIsBottomSelectionPhase(true);
-    setSelectedBottomCards([]);
-    
-    // DEBUG: Log the gameState phase to verify it's set correctly
-    console.log("[ENTER_BOTTOM_SELECTION] GameState phase after update:", finalGameStateWithPhase.phase);
-    
-    // Clear any blocking phases that might interfere
-    setIsBottomRevealPhase(false);
-    setIsPreFanPhase(false);
-    
-    // Note: AI bottom selection will be handled by useEffect below
-    // This ensures we use the latest gameState after React state updates
   };
 
   // AI strategy for selecting bottom cards
@@ -1527,11 +1532,20 @@ export default function PlaygroundScreen() {
       }
       
       // Verify we're still in bottom selection phase
-      if (currentState.phase !== 'DISCARD_BOTTOM' || currentState.dealerIndex !== dealerIndex) {
-        console.warn("[BOTTOM_SELECTION] Phase changed or dealer changed, aborting", {
+      // Note: Bottom selection now happens in PLAY_TRICK phase with isBottomSelectionPhase flag
+      // Check if it's the first trick (tricks.length === 0) and dealer is leading
+      const isFirstTrick = currentState.tricks.length === 0 && currentState.currentTrick.length === 0;
+      const isDealerTurn = currentState.currentPlayerIndex === dealerIndex;
+      if (currentState.dealerIndex !== dealerIndex || !isFirstTrick || !isDealerTurn) {
+        console.warn("[BOTTOM_SELECTION] Conditions not met for bottom selection, aborting", {
           phase: currentState.phase,
           expectedDealerIndex: dealerIndex,
           actualDealerIndex: currentState.dealerIndex,
+          isFirstTrick,
+          isDealerTurn,
+          currentPlayerIndex: currentState.currentPlayerIndex,
+          tricksLength: currentState.tricks.length,
+          currentTrickLength: currentState.currentTrick.length,
         });
         return currentState;
       }
@@ -1691,6 +1705,7 @@ export default function PlaygroundScreen() {
       };
       
       // Update state flags outside of setGameState
+      // CRITICAL: Set the same flags as player 0 bottom discard to ensure UI consistency
       setBottomCards(selectedBottom);
       setIsBottomSelectionPhase(false);
       setIsDingZhuPhase(false);
@@ -1699,6 +1714,11 @@ export default function PlaygroundScreen() {
       setHighlightDingZhuCard(null);
       setHasTrumpBeenChosen(true);
       setIsBottomRevealPhase(false);
+      // CRITICAL: Set trick complete flags so UI shows "next trick" button
+      setIsTrickComplete(true);
+      setLastTrickWinnerIndex(dealerIndex);
+      setTrickWinner(`玩家${dealerIndex + 1}`);
+      setShowNextTrickButton(true);
       
       console.log("[BOTTOM_SELECTION] AI bottom selection completed", {
         dealerIndex,
@@ -1706,6 +1726,7 @@ export default function PlaygroundScreen() {
         dealerHandSizeBefore: dealer.hand.length,
         dealerHandSizeAfter: newDealerHand.length,
         phase: finalGameState.phase,
+        tricksLength: finalGameState.tricks.length,
       });
       
       return finalGameState;
@@ -1975,12 +1996,14 @@ export default function PlaygroundScreen() {
 
   // Auto-select bottom cards for AI landlords
   // CRITICAL: This ensures bot landlords always go through bottom card discard step
-  // FIXED: Also check isBottomSelectionPhase state variable for compatibility
+  // Bottom selection now happens in PLAY_TRICK phase with isBottomSelectionPhase flag
   useEffect(() => {
     if (!gameState) return;
     
-    // Check both phase and state variable
-    const isInBottomSelection = gameState.phase === 'DISCARD_BOTTOM' || isBottomSelectionPhase;
+    // Check if it's bottom selection phase (first trick, dealer's turn)
+    const isFirstTrick = gameState.tricks.length === 0 && gameState.currentTrick.length === 0;
+    const isDealerTurn = gameState.currentPlayerIndex === gameState.dealerIndex;
+    const isInBottomSelection = isBottomSelectionPhase && isFirstTrick && isDealerTurn;
     if (!isInBottomSelection) return;
     
     // Only trigger for AI landlords (not player 0)
@@ -1995,14 +2018,32 @@ export default function PlaygroundScreen() {
     
     // Small delay to ensure state is fully updated
     // CRITICAL: Call handleAiBottomSelection directly - it will use setGameState to get latest state
+    // Check for AI bottom selection: first trick, dealer is AI (not player 0), and it's dealer's turn
     const timer = setTimeout(() => {
-      if (gameState && gameState.phase === 'DISCARD_BOTTOM' && gameState.dealerIndex !== 0) {
-        console.log("[BOTTOM_SELECTION] Calling handleAiBottomSelection", {
-          dealerIndex: gameState.dealerIndex,
-          phase: gameState.phase,
-          dealerHandSize: gameState.players[gameState.dealerIndex]?.hand?.length,
-        });
-        handleAiBottomSelection(gameState.dealerIndex, 6);
+      if (gameState && gameState.dealerIndex !== 0) {
+        const isFirstTrick = gameState.tricks.length === 0 && gameState.currentTrick.length === 0;
+        const isDealerTurn = gameState.currentPlayerIndex === gameState.dealerIndex;
+        if (isFirstTrick && isDealerTurn && isBottomSelectionPhase) {
+          console.log("[BOTTOM_SELECTION] Calling handleAiBottomSelection", {
+            dealerIndex: gameState.dealerIndex,
+            phase: gameState.phase,
+            isFirstTrick,
+            isDealerTurn,
+            isBottomSelectionPhase,
+            dealerHandSize: gameState.players[gameState.dealerIndex]?.hand?.length,
+          });
+          handleAiBottomSelection(gameState.dealerIndex, 6);
+        } else {
+          console.warn("[BOTTOM_SELECTION] Conditions not met for AI bottom selection", {
+            hasGameState: !!gameState,
+            phase: gameState?.phase,
+            dealerIndex: gameState?.dealerIndex,
+            isFirstTrick,
+            isDealerTurn,
+            isBottomSelectionPhase,
+            currentPlayerIndex: gameState?.currentPlayerIndex,
+          });
+        }
       } else {
         console.warn("[BOTTOM_SELECTION] Conditions not met for AI bottom selection", {
           hasGameState: !!gameState,
@@ -2013,7 +2054,7 @@ export default function PlaygroundScreen() {
     }, 500); // Increased delay to ensure state is stable
     
     return () => clearTimeout(timer);
-  }, [gameState?.phase, gameState?.dealerIndex, isBottomSelectionPhase, gameState]);
+  }, [gameState?.phase, gameState?.dealerIndex, gameState?.currentPlayerIndex, gameState?.tricks?.length, gameState?.currentTrick?.length, isBottomSelectionPhase, gameState]);
 
   // Auto-transition from bottom reveal to normal play after 2 seconds
   useEffect(() => {
@@ -2289,14 +2330,34 @@ export default function PlaygroundScreen() {
 
     // Don't auto-play if game is not ready or in a blocking phase
     // CRITICAL: Check isHandFinished FIRST to prevent any operations after game ends
+    // CRITICAL: isBottomSelectionPhase overrides blocking phases (allows bottom card play)
     // Use phase system to check for blocking phases
-    if (!gameState || handFinished || isTrickComplete || isHandFinished || 
-        isDingZhuPhase || gameState.phase === 'DISCARD_BOTTOM' || isBottomRevealPhase ||
-        gameState.phase === 'ROUND_END' || gameState.phase === 'CHOOSE_TRUMP' || gameState.phase === 'CONFIRM_LANDLORD') {
+    if (!gameState || handFinished || isTrickComplete || isHandFinished) {
+      console.log('[USE_EFFECT_AUTO_PLAY] early return: game finished or trick complete');
+      return;
+    }
+    
+    // CRITICAL: Don't auto-play right after bottom card discard (first trick just completed)
+    // Bottom discard: tricks.length === 1, currentTrick.length === 0, dealer should lead next
+    const isJustAfterBottomDiscard = gameState.tricks.length === 1 && 
+                                     gameState.currentTrick.length === 0 && 
+                                     gameState.dealerIndex === gameState.currentPlayerIndex;
+    if (isJustAfterBottomDiscard && showNextTrickButton) {
+      console.log('[USE_EFFECT_AUTO_PLAY] early return: just after bottom discard, waiting for next trick button');
+      return;
+    }
+    
+    // CRITICAL: isBottomSelectionPhase allows play even in DingZhu/DEAL phase
+    // CRITICAL: In PLAY_TRICK phase, allow play even if isDingZhuPhase is true (may be stale state)
+    const isInPlayPhase = gameState.phase === 'PLAY_TRICK';
+    if (!isBottomSelectionPhase && !isInPlayPhase && (isDingZhuPhase || gameState.phase === 'DISCARD_BOTTOM' || isBottomRevealPhase ||
+        gameState.phase === 'ROUND_END' || gameState.phase === 'CHOOSE_TRUMP' || gameState.phase === 'CONFIRM_LANDLORD')) {
       console.log('[USE_EFFECT_AUTO_PLAY] early return: blocking phase', {
         isDingZhuPhase,
         phase: gameState?.phase,
         isBottomRevealPhase,
+        isBottomSelectionPhase,
+        isInPlayPhase,
       });
       return;
     }
@@ -2412,11 +2473,14 @@ export default function PlaygroundScreen() {
     gameState?.currentTrick?.length, 
     gameState?.players,
     gameState?.phase,
+    gameState?.tricks?.length,
+    gameState?.dealerIndex,
     isAutoPlay,
     isTrickComplete,
     isDingZhuPhase,
     handFinished,
     isHandFinished,
+    showNextTrickButton,
   ]);
 
   // ============================================
@@ -2546,12 +2610,75 @@ export default function PlaygroundScreen() {
       return;
     }
     
+    // SIMPLIFIED: Check if this is the first trick (bottom card play)
+    const isFirstTrick = gameState.tricks.length === 0 && gameState.currentTrick.length === 0;
+    const isLandlord = gameState.dealerIndex === gameState.currentPlayerIndex;
+    
+    // During first trick, only landlord can play, and must play exactly 6 cards
+    if (isFirstTrick && !isLandlord) {
+      console.log('[PLAY_CARD] First trick - non-landlord player, auto-skip');
+      // Auto-skip: move to next player without playing
+      const nextPlayerIndex = (gameState.currentPlayerIndex + 1) % 4;
+      // If we've cycled back to landlord, the trick is complete (landlord played 6, others skipped)
+      if (nextPlayerIndex === gameState.dealerIndex) {
+        // Trick complete - landlord wins, no points
+        const landlordCards = gameState.currentTrick.filter(pc => pc.playerIndex === gameState.dealerIndex);
+        const bottomDiscardTrick: TrickResult = {
+          cards: gameState.currentTrick,
+          winnerIndex: gameState.dealerIndex,
+          winnerId: gameState.players[gameState.dealerIndex].id,
+          points: 0,
+        };
+        
+        // Add history event
+        const historyEvent: HistoryEvent = {
+          type: 'LANDLORD_DISCARD',
+          playerId: gameState.players[gameState.dealerIndex].id,
+          cards: landlordCards.map(pc => pc.card),
+          timestamp: Date.now(),
+          landlordId: gameState.players[gameState.dealerIndex].id,
+          landlordIndex: gameState.dealerIndex,
+        };
+        
+        const updatedState: GameState = {
+          ...gameState,
+          tricks: [bottomDiscardTrick],
+          bottomCards: landlordCards.map(pc => pc.card),
+          finalBottomCards: landlordCards.map(pc => pc.card),
+          history: [...(gameState.history || []), historyEvent],
+          currentTrick: [],
+          currentPlayerIndex: gameState.dealerIndex, // Landlord leads next trick
+        };
+        
+        setGameState(updatedState);
+        setIsTrickComplete(true);
+        setLastTrickWinnerIndex(gameState.dealerIndex);
+        setTrickWinner(`玩家${gameState.dealerIndex + 1}`);
+        setShowNextTrickButton(true);
+        return;
+      }
+      
+      // Move to next player
+      const updatedState: GameState = {
+        ...gameState,
+        currentPlayerIndex: nextPlayerIndex,
+      };
+      setGameState(updatedState);
+      return;
+    }
+    
     try {
-      // Check if this will be the 4th card (trick will complete)
-      const willCompleteTrick = gameState.currentTrick.length === 3;
+      // Check if this will complete the trick
+      // For first trick with landlord playing 6 cards, check if landlord has played 6 cards
+      const willCompleteTrick = isFirstTrick && isLandlord 
+        ? (gameState.currentTrick.filter(pc => pc.playerIndex === gameState.dealerIndex).length === 5)
+        : (gameState.currentTrick.length === 3);
       console.log('[PLAY_CARD] before playCard call', {
         willCompleteTrick,
         currentTrickLength: gameState.currentTrick.length,
+        isFirstTrick,
+        isLandlord,
+        landlordCardsInTrick: isFirstTrick && isLandlord ? gameState.currentTrick.filter(pc => pc.playerIndex === gameState.dealerIndex).length : 0,
       });
       
       const newState = playCard(gameState, currentPlayer.id, card);
@@ -2562,6 +2689,8 @@ export default function PlaygroundScreen() {
         currentTrickLength: newState.currentTrick.length,
         tricksCount: newState.tricks.length,
         currentPlayerIndex: newState.currentPlayerIndex,
+        isFirstTrick,
+        isLandlord,
       });
       
       // Safety check: ensure newState is valid
@@ -2570,7 +2699,53 @@ export default function PlaygroundScreen() {
         return;
       }
       
-      // Check if trick was just completed
+      // SIMPLIFIED: Handle first trick (bottom card play) completion
+      if (isFirstTrick && isLandlord) {
+        const landlordCardsInTrick = newState.currentTrick.filter(pc => pc.playerIndex === gameState.dealerIndex);
+        if (landlordCardsInTrick.length === 6) {
+          // Landlord has played 6 cards - complete the trick
+          // Other players auto-skip (handled above)
+          const bottomDiscardTrick: TrickResult = {
+            cards: newState.currentTrick,
+            winnerIndex: gameState.dealerIndex,
+            winnerId: gameState.players[gameState.dealerIndex].id,
+            points: 0,
+          };
+          
+          // Add history event
+          const historyEvent: HistoryEvent = {
+            type: 'LANDLORD_DISCARD',
+            playerId: gameState.players[gameState.dealerIndex].id,
+            cards: landlordCardsInTrick.map(pc => pc.card),
+            timestamp: Date.now(),
+            landlordId: gameState.players[gameState.dealerIndex].id,
+            landlordIndex: gameState.dealerIndex,
+          };
+          
+          const updatedState: GameState = {
+            ...newState,
+            tricks: [bottomDiscardTrick],
+            bottomCards: landlordCardsInTrick.map(pc => pc.card),
+            finalBottomCards: landlordCardsInTrick.map(pc => pc.card),
+            history: [...(newState.history || []), historyEvent],
+            currentTrick: [],
+            currentPlayerIndex: gameState.dealerIndex, // Landlord leads next trick
+          };
+          
+          setGameState(updatedState);
+          setIsTrickComplete(true);
+          setLastTrickWinnerIndex(gameState.dealerIndex);
+          setTrickWinner(`玩家${gameState.dealerIndex + 1}`);
+          setShowNextTrickButton(true);
+          return;
+        }
+        
+        // Landlord hasn't played 6 cards yet - continue playing
+        setGameState(newState);
+        return;
+      }
+      
+      // Check if trick was just completed (normal play)
       if (willCompleteTrick && newState.currentTrick.length === 0 && newState.tricks.length > 0) {
         console.log('[RESOLVE_TRICK] start', {
           tricksCount: newState.tricks.length,
@@ -2793,14 +2968,12 @@ export default function PlaygroundScreen() {
       });
     });
     
-    // Check if this is the bottom discard phase (first trick after bottom cards are picked up)
-    // If tricks array has exactly 1 trick with 6 cards, it's the bottom discard trick
-    const isBottomDiscardPhase = gameState.tricks && 
-                                 gameState.tricks.length === 1 &&
-                                 gameState.tricks[0]?.cards?.length === 6 &&
-                                 gameState.currentTrick.length === 0 &&
-                                 gameState.dealerIndex === 0 &&
-                                 cardsToPlay.length === 6;
+    // Check if this is the bottom discard phase (first trick)
+    // Bottom discard: first trick, dealer plays exactly 6 cards
+    // Don't rely on isBottomSelectionPhase as it may be false when called
+    const isFirstTrick = gameState.tricks.length === 0 && gameState.currentTrick.length === 0;
+    const isLandlord = gameState.dealerIndex === 0;
+    const isBottomDiscardPhase = isFirstTrick && isLandlord && cardsToPlay.length === 6;
     
     // In bottom discard phase, other 3 players automatically skip (don't play cards)
     // So the trick is complete immediately after dealer plays 6 cards
@@ -2814,9 +2987,51 @@ export default function PlaygroundScreen() {
       
       if (isBottomDiscardPhase) {
         // Bottom discard: dealer wins, no points
+        // Also set bottomCards and add history event
         winnerIndex = gameState.dealerIndex;
         points = 0;
         console.log("[BOTTOM_DISCARD] Bottom discard trick completed, dealer wins (no points)");
+        
+        // Add history event
+        const historyEvent: HistoryEvent = {
+          type: 'LANDLORD_DISCARD',
+          playerId: gameState.players[gameState.dealerIndex].id,
+          cards: cardsToPlay,
+          timestamp: Date.now(),
+          landlordId: gameState.players[gameState.dealerIndex].id,
+          landlordIndex: gameState.dealerIndex,
+        };
+        
+        // Create trick result with bottom cards
+        const bottomDiscardTrick: TrickResult = {
+          cards: newCurrentTrick,
+          winnerIndex: gameState.dealerIndex,
+          winnerId: gameState.players[gameState.dealerIndex].id,
+          points: 0,
+        };
+        
+        // Update gameState with bottomCards
+        const updatedStateWithBottom: GameState = {
+          ...gameState,
+          players: newPlayers,
+          tricks: [...gameState.tricks, bottomDiscardTrick],
+          bottomCards: cardsToPlay,
+          finalBottomCards: cardsToPlay,
+          history: [...(gameState.history || []), historyEvent],
+          currentTrick: [],
+          currentPlayerIndex: gameState.dealerIndex, // Landlord leads next trick
+          phase: 'PLAY_TRICK', // Ensure phase is set to PLAY_TRICK after bottom discard
+        };
+        
+        setGameState(updatedStateWithBottom);
+        setIsBottomSelectionPhase(false); // Clear bottom selection phase
+        setIsDingZhuPhase(false); // Clear DingZhu phase after bottom discard
+        setBottomCards([]); // Clear bottom cards display after discard
+        setIsTrickComplete(true);
+        setLastTrickWinnerIndex(gameState.dealerIndex);
+        setTrickWinner(`玩家${gameState.dealerIndex + 1}`);
+        setShowNextTrickButton(true);
+        return; // Early return - trick is complete
       } else {
         // Normal trick: determine winner
         const leaderIndex = newCurrentTrick[0].playerIndex;
@@ -3185,16 +3400,35 @@ export default function PlaygroundScreen() {
     // FIXED: Declare isInPlayPhase once at the top of the function
     const isInPlayPhase = gameState.phase === 'PLAY_TRICK';
     
-    // SIMPLIFIED: Bottom selection - treat as selecting cards to discard
+    // SIMPLIFIED: Bottom selection - use normal card selection (not separate toggle)
     // Only rule: cannot select point cards (5, 10, K)
     // All other rules (甩牌, follow-suit, etc.) are ignored
-    const isInBottomSelection = (isBottomSelectionPhase || gameState.phase === 'DISCARD_BOTTOM') && 
-                                gameState.dealerIndex === 0;
+    const isFirstTrick = gameState.tricks.length === 0 && gameState.currentTrick.length === 0;
+    const isLandlord = gameState.dealerIndex === 0;
+    const canOverrideBlocking = isBottomSelectionPhase || (isFirstTrick && isLandlord);
+    const isInBottomSelection = (isBottomSelectionPhase || (isFirstTrick && isLandlord)) && isLandlord;
     
     if (isInBottomSelection) {
-      console.log("[HANDLE_CARD_PRESS] Bottom selection phase - calling handleBottomCardToggle");
-      handleBottomCardToggle(card);
-      return; // Don't play cards during bottom selection
+      // Check if card is a point card (5, 10, K) - these cannot be used as bottom cards
+      const isPointCard = card.rank === 5 || card.rank === 10 || card.rank === 13;
+      if (isPointCard) {
+        Alert.alert('无效选择', '扣底牌不能选择 5、10、K（有分值的牌）');
+        return;
+      }
+      
+      // Toggle card selection (normal selection logic)
+      const isSelected = selectedCards.some(c => c.suit === card.suit && c.rank === card.rank);
+      if (isSelected) {
+        setSelectedCards(prev => prev.filter(c => !(c.suit === card.suit && c.rank === card.rank)));
+      } else {
+        // Can only select up to 6 cards
+        if (selectedCards.length >= 6) {
+          Alert.alert('选择过多', '扣底牌只能选择 6 张牌');
+          return;
+        }
+        setSelectedCards(prev => [...prev, card]);
+      }
+      return; // Don't play cards yet - wait for play button
     }
     
     // Block card play during bottom reveal phase
@@ -3224,10 +3458,10 @@ export default function PlaygroundScreen() {
     // Case A: Leading a new trick (currentTrick empty)
     // Allow multi-select for rui-pai, but also support single-card play
     // Note: isPreFanPhase is NOT checked - fan selection doesn't block card playing
-    // FIXED: Don't block if we're in PLAY_TRICK phase (normal play)
-    // CRITICAL: Also check that we're not in bottom selection phase
+    // FIXED: Don't block if we're in PLAY_TRICK phase (normal play) or bottom selection
+    // CRITICAL: isBottomSelectionPhase or first trick overrides DingZhu blocking
     if (isPlayer0Turn && isTrickEmpty && !isTrickComplete && !isHandFinished && 
-        (!isDingZhuPhase || isInPlayPhase) && !isInBottomSelection) {
+        (!isDingZhuPhase || isInPlayPhase || canOverrideBlocking)) {
       console.log("[HANDLE_CARD_PRESS] Leading new trick - toggling card selection", {
         card: `${card.suit}${card.rank}`,
         phase: gameState.phase,
@@ -3297,13 +3531,25 @@ export default function PlaygroundScreen() {
     });
     
     // Update game state: clear currentTrick and set current player to winner
+    // If this is the transition from first trick (bottom discard) to second trick, clear bottom cards
+    const isTransitioningFromBottomDiscard = gameState.tricks.length === 1;
     const updatedState: GameState = {
       ...gameState,
       currentTrick: [], // Clear the trick
       currentPlayerIndex: lastTrickWinnerIndex, // Winner leads next trick
+      // Clear bottom cards when transitioning from first trick (bottom discard) to second trick
+      ...(isTransitioningFromBottomDiscard && {
+        bottomCards: [],
+        finalBottomCards: [],
+      }),
     };
     
     setGameState(updatedState);
+    
+    // Also clear bottomCards state if transitioning from bottom discard
+    if (isTransitioningFromBottomDiscard) {
+      setBottomCards([]);
+    }
     
     // Reset trick complete state
     setIsTrickComplete(false);
@@ -3777,7 +4023,11 @@ export default function PlaygroundScreen() {
           let isCardDisabled: boolean;
           
           // SIMPLIFIED: Bottom selection logic - ONLY check for point cards, ignore all other rules
-          const isInBottomSelection = (isBottomSelectionPhase || gameState?.phase === 'DISCARD_BOTTOM') && 
+          // CRITICAL: isBottomSelectionPhase overrides DingZhu/DEAL blocking
+          // Also check if it's the first trick (tricks.length === 0) and landlord is player 0
+          const isFirstTrick = gameState && gameState.tricks.length === 0 && gameState.currentTrick.length === 0;
+          const isLandlord = gameState && gameState.dealerIndex === 0;
+          const isInBottomSelection = (isBottomSelectionPhase || (isFirstTrick && isLandlord)) && 
                                       isPlayer0 && 
                                       gameState && 
                                       gameState.dealerIndex === 0;
@@ -3785,23 +4035,28 @@ export default function PlaygroundScreen() {
           if (isInBottomSelection) {
             // Human dealer selecting bottom - ONLY disable point cards (5, 10, K)
             // All other cards should be clickable/selectable
-            // IGNORE: 甩牌 rules, follow-suit rules, and all other validation
+            // IGNORE: 甩牌 rules, follow-suit rules, DingZhu phase, DEAL phase, and all other validation
             isCardDisabled = isDisabledForBottom;
             console.log("[CARD_DISABLED_BOTTOM]", {
               card: `${card.suit}${card.rank}`,
               isDisabledForBottom,
               isCardDisabled,
               willBeClickable: !isCardDisabled,
+              isBottomSelectionPhase,
+              isFirstTrick,
+              isLandlord,
+              phase: gameState?.phase,
             });
           } else {
             // Normal play phase - apply standard validation rules
-            // CRITICAL: Don't disable cards if we're in DISCARD_BOTTOM phase (handled above)
-            // FIXED: Allow cards to be clickable during PLAY_TRICK phase
+            // CRITICAL: Allow cards to be clickable during PLAY_TRICK phase
+            // CRITICAL: isBottomSelectionPhase or first trick overrides DingZhu/DEAL blocking
             const isInPlayPhase = gameState?.phase === 'PLAY_TRICK';
+            const canOverrideBlocking = isBottomSelectionPhase || (isFirstTrick && isLandlord && isPlayer0);
             isCardDisabled = (
-              (isDingZhuPhase && !isInPlayPhase) || 
+              (isDingZhuPhase && !isInPlayPhase && !canOverrideBlocking) || // Allow if bottom selection or first trick
               (isTrickComplete && !isRuiPaiActive) || 
-              (isCardInvalidForPlay && !isInPlayPhase)  // Disable cards that violate follow-suit rules (but allow during play phase)
+              (isCardInvalidForPlay && !isInPlayPhase && !canOverrideBlocking)  // Allow if bottom selection or first trick
             );
             if (isPlayer0) {
               console.log("[CARD_DISABLED_NORMAL]", {
@@ -3810,6 +4065,10 @@ export default function PlaygroundScreen() {
                 isTrickComplete,
                 isCardInvalidForPlay,
                 isInPlayPhase,
+                isBottomSelectionPhase,
+                isFirstTrick,
+                isLandlord,
+                canOverrideBlocking,
                 isCardDisabled,
                 willBeClickable: !isCardDisabled,
               });
@@ -4177,7 +4436,11 @@ export default function PlaygroundScreen() {
               })()}
               
               {/* Trick History */}
+              {/* Skip first trick (index 0) as it's the bottom discard, already shown above */}
               {gameState.tricks.map((trick, trickIndex) => {
+                // Skip first trick (bottom discard) - it's already shown in the "扣底牌" section above
+                if (trickIndex === 0) return null;
+                
                 const winnerIndex = trick.winnerIndex;
                 
                 return (
@@ -4513,7 +4776,7 @@ export default function PlaygroundScreen() {
 
         {/* Current Trick Area - Diamond layout (菱形) with 4 horizontal groups */}
         
-        {/* Bottom Cards - Always visible at dealer's position (like trick cards) */}
+        {/* Bottom Cards - Only visible during first trick (bottom discard) */}
         {(() => {
           // Get bottom cards from LANDLORD_DISCARD event first, then BOTTOM_SET, then bottomCards/finalBottomCards
           const landlordDiscardEvent = gameState?.history?.find(e => e.type === 'LANDLORD_DISCARD');
@@ -4521,8 +4784,15 @@ export default function PlaygroundScreen() {
           const bottomCards = landlordDiscardEvent?.cards || bottomSetEvent?.cards || gameState?.bottomCards || gameState?.finalBottomCards;
           const dealerIndex = landlordDiscardEvent?.landlordIndex ?? bottomSetEvent?.dealerIndex ?? gameState?.dealerIndex ?? 0;
           
-          // Always show bottom cards if they exist, regardless of dealer or phase
-          if (!bottomCards || bottomCards.length === 0) return null;
+          // Show bottom cards:
+          // 1. Before/during bottom discard (tricks.length === 0)
+          // 2. After bottom discard complete, waiting for next trick (tricks.length === 1 and showNextTrickButton)
+          // Hide bottom cards once next trick starts (tricks.length >= 2)
+          const isBottomDiscardPhase = !gameState || gameState.tricks.length === 0;
+          const isWaitingForNextTrickAfterBottom = gameState && gameState.tricks.length === 1 && showNextTrickButton;
+          const shouldShowBottomCards = isBottomDiscardPhase || isWaitingForNextTrickAfterBottom;
+          
+          if (!bottomCards || bottomCards.length === 0 || !shouldShowBottomCards) return null;
           
           // Display bottom cards at dealer's position (same as trick cards)
           // Player 0 (bottom): cards above hand
@@ -5104,83 +5374,17 @@ export default function PlaygroundScreen() {
 
       {/* Game Phase Indicator Banner - REMOVED per user request */}
 
-      {/* Bottom Card Selection Phase Banner - Detailed Panel with Confirm Button */}
-      {/* RESTORED: Use isBottomSelectionPhase state variable (old working logic) */}
-      {(isBottomSelectionPhase || (gameState && gameState.phase === 'DISCARD_BOTTOM')) && gameState && gameState.dealerIndex === 0 && (
-        <View style={{
-          position: 'absolute',
-          top: 100, // FIXED: Changed from 20 to 100 to ensure visibility
-          left: '50%',
-          marginLeft: -200, // Half of width (400/2) to center
-          width: 400,
-          backgroundColor: '#2d7a4d',
-          paddingVertical: 15,
-          paddingHorizontal: 20,
-          borderRadius: 10,
-          borderWidth: 3,
-          borderColor: '#ffd700',
-          zIndex: 300, // FIXED: Higher zIndex to ensure it's above other UI elements
-          alignItems: 'center',
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: 4 },
-          shadowOpacity: 0.5,
-          shadowRadius: 8,
-          elevation: 10,
-        }}>
-          <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 10, textAlign: 'center' }}>
-            你是庄家 👑
-          </Text>
-          <Text style={{ color: '#fff', fontSize: 16, marginBottom: 10, textAlign: 'center' }}>
-            请从手牌中选择 6 张扣到底牌
-          </Text>
-          <Text style={{ color: '#ffd700', fontSize: 20, fontWeight: 'bold', marginBottom: 15 }}>
-            已选择: {selectedBottomCards.length} / 6
-          </Text>
-          <Pressable
-            onPress={handleConfirmBottomSelection}
-            disabled={selectedBottomCards.length !== 6}
-            style={{
-              backgroundColor: selectedBottomCards.length === 6 ? '#4caf50' : '#666',
-              paddingHorizontal: 40,
-              paddingVertical: 12,
-              borderRadius: 8,
-              opacity: selectedBottomCards.length === 6 ? 1 : 0.5,
-              minWidth: 150,
-              alignItems: 'center',
-            }}
-          >
-            <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>
-              {selectedBottomCards.length === 6 ? '确认扣底' : `还需选择 ${6 - selectedBottomCards.length} 张`}
-            </Text>
-          </Pressable>
-          {selectedBottomCards.length < 6 && (
-            <Text style={{ color: '#ffd700', fontSize: 12, marginTop: 8, textAlign: 'center' }}>
-              提示: 不能选择 5、10、K（有分值的牌）
-            </Text>
-          )}
-        </View>
-      )}
+      {/* REMOVED: Old bottom card selection UI - now handled as first trick */}
+      {/* Bottom card selection is now part of normal play (first trick) */}
 
-      {/* AI Bottom Selection Notification */}
-      {gameState && gameState.phase === 'DISCARD_BOTTOM' && gameState.dealerIndex !== 0 && (
-        <View style={{
-          position: 'absolute',
-          top: 50,
-          left: '10%',
-          right: '10%',
-          backgroundColor: 'rgba(0,0,0,0.7)',
-          padding: 10,
-          borderRadius: 8,
-          zIndex: 50,
-        }}>
-          <Text style={{ color: '#ffd700', fontSize: 14, textAlign: 'center' }}>
-            玩家{gameState.dealerIndex + 1} 扣好了底牌
-          </Text>
-        </View>
-      )}
+      {/* REMOVED: Old AI bottom selection notification - now handled as first trick */}
+      {/* AI bottom card selection is now part of normal play (first trick) */}
 
       {/* Pre-Fan Phase Panel - Only show when player has eligible fan cards */}
-      {isPreFanPhase && gameState && !isDingZhuPhase && gameState.phase !== 'DISCARD_BOTTOM' && (canThreeFan || canFiveFan) && (
+      {/* Show during dealing phase (DEAL) or before bottom discard, even if in DingZhu phase */}
+      {/* Allow showing during dealing even if gameState doesn't exist yet or is in DingZhu phase */}
+      {isPreFanPhase && (canThreeFan || canFiveFan) && 
+       (isDealing || (gameState && gameState.phase !== 'DISCARD_BOTTOM' && (!isDingZhuPhase || gameState.phase === 'DEAL'))) && (
         <View style={{
           backgroundColor: '#2d7a4d',
           padding: 20,
@@ -5242,17 +5446,15 @@ export default function PlaygroundScreen() {
       )}
 
       {/* Card Selection Panel - Show when Player 0 is leader and has selected cards */}
-      {/* FIXED: Also show during bottom selection phase with different UI */}
       {gameState && gameState.currentPlayerIndex === 0 && gameState.currentTrick.length === 0 && 
-       selectedCards.length > 0 && !isTrickComplete && !isHandFinished && !isDingZhuPhase && (() => {
-         // Check if we're in bottom selection phase
-         const isInBottomSelection = (isBottomSelectionPhase || gameState?.phase === 'DISCARD_BOTTOM') && 
-                                     gameState.dealerIndex === 0;
-         
-         // During bottom selection, show different UI
-         if (isInBottomSelection) {
-           return null; // Don't show this panel during bottom selection - use the bottom selection panel instead
-         }
+       selectedCards.length > 0 && !isTrickComplete && !isHandFinished && (() => {
+         // Check if this is the first trick (bottom card play)
+         const isFirstTrick = gameState.tricks.length === 0 && gameState.currentTrick.length === 0;
+         const isLandlord = gameState.dealerIndex === 0;
+         const isBottomCardSelection = isFirstTrick && isLandlord;
+         // Show button if: not in DingZhu phase (or in play phase), OR in bottom card selection phase
+         const shouldShowButton = (!isDingZhuPhase || gameState.phase === 'PLAY_TRICK' || isBottomSelectionPhase || isBottomCardSelection);
+         if (!shouldShowButton) return null;
         // Validate selection for rui-pai (if 2+ cards)
         // Pass all players' hands to check if higher cards exist in ANY player's hand
         const allPlayersHands = gameState ? gameState.players.map(p => p.hand) : undefined;
@@ -5303,38 +5505,19 @@ export default function PlaygroundScreen() {
                   }}
                 >
                   <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
-                    {(() => {
-                      // Check if this is the first trick (after bottom discard)
-                      // If tricks array has exactly 1 trick with 6 cards, it's the bottom discard trick
-                      const isFirstRealTrick = gameState && 
-                                                gameState.tricks && 
-                                                gameState.tricks.length === 1 &&
-                                                gameState.tricks[0]?.cards?.length === 6 &&
-                                                gameState.currentTrick.length === 0;
-                      return isFirstRealTrick ? '扣底牌' : '出牌';
-                    })()}
+                    {isFirstTrick && isLandlord && isBottomSelectionPhase ? '扣底牌' : '出牌'}
                   </Text>
                 </Pressable>
               )}
               {/* Rui-pai button - show when 2+ cards selected */}
-              {/* Button is always enabled - validation happens in startRuiPaiSequence with Alert */}
-              {selectedCards.length >= 2 && (
+              {/* For first trick (bottom card play), only show if exactly 6 cards selected */}
+              {selectedCards.length >= 2 && (!isFirstTrick || !isLandlord || selectedCards.length === 6) && (
                 <Pressable
                   onPress={() => {
-                    // Check if this is the bottom discard phase (first trick after bottom cards are picked up)
-                    // If tricks array has exactly 1 trick with 6 cards, it's the bottom discard trick
-                    const isBottomDiscardPhase = gameState && 
-                                                 gameState.tricks && 
-                                                 gameState.tricks.length === 1 &&
-                                                 gameState.tricks[0]?.cards?.length === 6 &&
-                                                 gameState.currentTrick.length === 0 &&
-                                                 gameState.dealerIndex === 0 &&
-                                                 selectedCards.length === 6;
-                    
-                    if (isBottomDiscardPhase) {
-                      // In bottom discard phase, skip rui-pai validation and directly play cards
-                      // Other players will automatically skip (handled in playMultipleCardsInOneTrick)
-                      console.log("[BOTTOM_DISCARD] Playing 6 cards without rui-pai validation");
+                    const isBottomCardPlay = isFirstTrick && isLandlord && selectedCards.length === 6;
+                    if (isBottomCardPlay && (isBottomSelectionPhase || gameState.phase === 'PLAY_TRICK' || gameState.phase === 'DEAL')) {
+                      // First trick: play 6 cards as bottom cards (skip rui-pai validation)
+                      console.log("[BOTTOM_DISCARD] Playing 6 cards as bottom cards");
                       playMultipleCardsInOneTrick(selectedCards);
                       setSelectedCards([]);
                     } else {
@@ -5343,26 +5526,16 @@ export default function PlaygroundScreen() {
                     }
                   }}
                   style={{
-                    backgroundColor: ruiPaiValid ? '#4caf50' : '#666',
+                    backgroundColor: (isFirstTrick && isLandlord && selectedCards.length === 6 && (isBottomSelectionPhase || gameState.phase === 'PLAY_TRICK' || gameState.phase === 'DEAL')) || ruiPaiValid ? '#4caf50' : '#666',
                     paddingHorizontal: 16,
                     paddingVertical: 8,
                     borderRadius: 6,
-                    opacity: ruiPaiValid ? 1 : 0.7,
+                    opacity: (isFirstTrick && isLandlord && selectedCards.length === 6 && (isBottomSelectionPhase || gameState.phase === 'PLAY_TRICK' || gameState.phase === 'DEAL')) || ruiPaiValid ? 1 : 0.7,
                     minWidth: 100,
                   }}
                 >
                   <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
-                    {(() => {
-                      // Check if this is the bottom discard phase
-                      const isBottomDiscardPhase = gameState && 
-                                                   gameState.tricks && 
-                                                   gameState.tricks.length === 1 &&
-                                                   gameState.tricks[0]?.cards?.length === 6 &&
-                                                   gameState.currentTrick.length === 0 &&
-                                                   gameState.dealerIndex === 0 &&
-                                                   selectedCards.length === 6;
-                      return isBottomDiscardPhase ? '扣底牌' : `甩牌 (${selectedCards.length})`;
-                    })()}
+                    {isFirstTrick && isLandlord && selectedCards.length === 6 && (isBottomSelectionPhase || gameState.phase === 'PLAY_TRICK' || gameState.phase === 'DEAL') ? '扣底牌' : `甩牌 (${selectedCards.length})`}
                   </Text>
                 </Pressable>
               )}
