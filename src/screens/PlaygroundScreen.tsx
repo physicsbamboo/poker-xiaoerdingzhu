@@ -3895,118 +3895,147 @@ export default function PlaygroundScreen() {
         : '双进贡';
     
     return (
-      <View style={{ flex: 1, backgroundColor: '#0d5d2f', justifyContent: 'center', alignItems: 'center' }}>
+      <View style={{ flex: 1, backgroundColor: '#0d5d2f', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
         <View style={{
           backgroundColor: '#1a4d2e',
           borderRadius: 15,
-          padding: 25,
-          width: '90%',
-          maxWidth: 400,
+          padding: 20,
+          width: '95%',
+          maxWidth: 900,
           borderWidth: 3,
           borderColor: '#ffd700',
+          flexDirection: 'row',
+          gap: 20,
         }}>
-          <Text style={{ color: '#ffd700', fontSize: 24, fontWeight: 'bold', textAlign: 'center', marginBottom: 20 }}>
-            本局结束
-          </Text>
-          
-          <ScrollView style={{ maxHeight: '70%' }} showsVerticalScrollIndicator={true}>
-            <View style={{ marginBottom: 15 }}>
-              <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 10, textAlign: 'center' }}>
-                第 {matchState.handNumber || 1} 局结束
+          {/* Left Column: Current Hand Info */}
+          <View style={{ flex: 1, justifyContent: 'flex-start' }}>
+            <Text style={{ color: '#ffd700', fontSize: 22, fontWeight: 'bold', textAlign: 'center', marginBottom: 15 }}>
+              本局结束
+            </Text>
+            
+            <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold', marginBottom: 12, textAlign: 'center' }}>
+              第 {matchState.handNumber || 1} 局
+            </Text>
+            
+            {/* Result Summary */}
+            <View style={{ 
+              backgroundColor: '#0d5d2f',
+              padding: 12,
+              borderRadius: 8,
+              marginBottom: 12,
+            }}>
+              <Text style={{ color: '#fff', fontSize: 15, fontWeight: 'bold', textAlign: 'center', marginBottom: 6 }}>
+                本局结果
               </Text>
-              
-              {/* Result Summary */}
-              <View style={{ 
-                backgroundColor: '#0d5d2f',
-                padding: 15,
-                borderRadius: 8,
-                marginBottom: 10,
-              }}>
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center', marginBottom: 8 }}>
-                  本局结果：{dealerStepsDown ? '庄家下台' : '庄家连庄'}
+              <Text style={{ color: '#ffd700', fontSize: 18, fontWeight: 'bold', textAlign: 'center', marginBottom: 8 }}>
+                {dealerStepsDown ? '庄家下台' : '庄家连庄'}
+              </Text>
+              <Text style={{ color: '#ccc', fontSize: 14, textAlign: 'center' }}>
+                下一局：{tributeText}
+              </Text>
+            </View>
+            
+            {/* Score Summary */}
+            <View style={{ backgroundColor: '#0d5d2f', padding: 12, borderRadius: 8 }}>
+              <Text style={{ color: '#ffd700', fontSize: 14, fontWeight: 'bold', marginBottom: 8, textAlign: 'center' }}>
+                本局得分
+              </Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                <Text style={{ color: '#fff', fontSize: 15, fontWeight: 'bold' }}>
+                  庄家方:
                 </Text>
-                <Text style={{ color: '#ffd700', fontSize: 16, fontWeight: 'bold', textAlign: 'center' }}>
-                  下一局：{tributeText}
-                </Text>
-              </View>
-              
-              {/* Score Summary */}
-              <View style={{ backgroundColor: '#0d5d2f', padding: 15, borderRadius: 8, marginBottom: 10 }}>
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold', marginBottom: 8 }}>
-                  庄家方: {finalScores.dealerTeam.totalPoints} 分
-                </Text>
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold', marginBottom: 8 }}>
-                  闲家方: {finalScores.nonDealerTeam.totalPoints} 分
+                <Text style={{ color: '#fff', fontSize: 15, fontWeight: 'bold' }}>
+                  {finalScores.dealerTeam.totalPoints} 分
                 </Text>
               </View>
-              
-              {/* Match Totals */}
-              <View style={{ marginTop: 10, paddingTop: 15, borderTopWidth: 1, borderTopColor: '#555' }}>
-                <Text style={{ color: '#ffd700', fontSize: 14, fontWeight: 'bold', marginBottom: 10, textAlign: 'center' }}>
-                  比赛总分 (累计):
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                <Text style={{ color: '#fff', fontSize: 15, fontWeight: 'bold' }}>
+                  闲家方:
                 </Text>
-                <View style={{ backgroundColor: '#0d5d2f', padding: 12, borderRadius: 8, marginBottom: 8 }}>
-                  <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
-                    庄家方: {(matchState.dealerTeamTotal || 0) + finalScores.dealerTeam.totalPoints} 分
+                <Text style={{ color: '#fff', fontSize: 15, fontWeight: 'bold' }}>
+                  {finalScores.nonDealerTeam.totalPoints} 分
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Divider */}
+          <View style={{ width: 2, backgroundColor: '#555', marginVertical: 10 }} />
+
+          {/* Right Column: Match Totals and Buttons */}
+          <View style={{ flex: 1, justifyContent: 'space-between' }}>
+            {/* Match Totals */}
+            <View>
+              <Text style={{ color: '#ffd700', fontSize: 18, fontWeight: 'bold', marginBottom: 12, textAlign: 'center' }}>
+                比赛总分
+              </Text>
+              <View style={{ backgroundColor: '#0d5d2f', padding: 12, borderRadius: 8, marginBottom: 10 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <Text style={{ color: '#fff', fontSize: 15, fontWeight: 'bold' }}>
+                    庄家方:
+                  </Text>
+                  <Text style={{ color: '#fff', fontSize: 15, fontWeight: 'bold' }}>
+                    {(matchState.dealerTeamTotal || 0) + finalScores.dealerTeam.totalPoints} 分
                   </Text>
                 </View>
-                <View style={{ backgroundColor: '#0d5d2f', padding: 12, borderRadius: 8 }}>
-                  <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
-                    闲家方: {(matchState.nonDealerTeamTotal || 0) + finalScores.nonDealerTeam.totalPoints} 分
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ color: '#fff', fontSize: 15, fontWeight: 'bold' }}>
+                    闲家方:
+                  </Text>
+                  <Text style={{ color: '#fff', fontSize: 15, fontWeight: 'bold' }}>
+                    {(matchState.nonDealerTeamTotal || 0) + finalScores.nonDealerTeam.totalPoints} 分
                   </Text>
                 </View>
               </View>
             </View>
-          </ScrollView>
-          
-          {/* Action Buttons */}
-          <View style={{ marginTop: 15, borderTopWidth: 1, borderTopColor: '#555', paddingTop: 15 }}>
-            <Pressable
-              onPress={handleNextHand}
-              style={{
-                backgroundColor: '#4caf50',
-                paddingVertical: 12,
-                paddingHorizontal: 20,
-                borderRadius: 8,
-                alignItems: 'center',
-                marginBottom: 10,
-              }}
-            >
-              <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>
-                继续下一局
-              </Text>
-            </Pressable>
             
-            <Pressable
-              onPress={handleNewGame}
-              style={{
-                backgroundColor: '#666',
-                paddingVertical: 10,
-                paddingHorizontal: 20,
-                borderRadius: 8,
-                alignItems: 'center',
-                marginBottom: 10,
-              }}
-            >
-              <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
-                新比赛
-              </Text>
-            </Pressable>
+            {/* Action Buttons */}
+            <View style={{ gap: 10 }}>
+              <Pressable
+                onPress={handleNextHand}
+                style={{
+                  backgroundColor: '#4caf50',
+                  paddingVertical: 12,
+                  paddingHorizontal: 20,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>
+                  继续下一局
+                </Text>
+              </Pressable>
+              
+              <Pressable
+                onPress={handleNewGame}
+                style={{
+                  backgroundColor: '#666',
+                  paddingVertical: 10,
+                  paddingHorizontal: 20,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
+                  新比赛
+                </Text>
+              </Pressable>
 
-            <Pressable
-              onPress={handleBackToLobby}
-              style={{
-                backgroundColor: '#666',
-                paddingVertical: 10,
-                paddingHorizontal: 20,
-                borderRadius: 8,
-                alignItems: 'center',
-              }}
-            >
-              <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
-                返回大厅
-              </Text>
-            </Pressable>
+              <Pressable
+                onPress={handleBackToLobby}
+                style={{
+                  backgroundColor: '#666',
+                  paddingVertical: 10,
+                  paddingHorizontal: 20,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
+                  返回大厅
+                </Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </View>
