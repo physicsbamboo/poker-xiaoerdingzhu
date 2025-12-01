@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -98,6 +98,186 @@ A＞K＞Q(除黑桃)＞10＞......＞5（除方片）＞4＞3＞2。 [1]
 2、亮三五反的一方，可以免受进贡的处罚。
 
 `;
+
+// Safe Rules Modal Component - completely independent, no dependencies
+// CRITICAL: This component does NOT change screen orientation
+const SafeRulesModal = React.memo(({ visible, onClose, rulesText }: { 
+  visible: boolean; 
+  onClose: () => void;
+  rulesText: string;
+}) => {
+  // Ensure screen stays in landscape when modal is shown
+  useEffect(() => {
+    if (visible) {
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(e => {
+        console.error('[RULES_MODAL] Error locking orientation', e);
+      });
+    }
+  }, [visible]);
+  
+  if (!visible) return null;
+  
+  return (
+    <Modal
+      visible={true}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={onClose}
+      supportedOrientations={['landscape']}
+    >
+      <View style={{
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.7)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 20,
+      }}>
+        <View style={{
+          backgroundColor: '#1a4d2e',
+          borderRadius: 15,
+          padding: 20,
+          width: '90%',
+          maxWidth: 800,
+          maxHeight: '85%',
+          borderWidth: 2,
+          borderColor: '#ffd700',
+        }}>
+          <Text style={{ 
+            color: '#ffd700', 
+            fontSize: 22, 
+            fontWeight: 'bold',
+            marginBottom: 15,
+            textAlign: 'center',
+          }}>
+            游戏规则
+          </Text>
+          <ScrollView 
+            style={{ maxHeight: '70%' }}
+            showsVerticalScrollIndicator={true}
+            nestedScrollEnabled={true}
+          >
+            <Text style={{ 
+              fontSize: 14, 
+              lineHeight: 22, 
+              color: '#fff',
+              textAlign: 'left',
+            }}>
+              {rulesText || '游戏规则\n\n规则内容加载中，请稍候...'}
+            </Text>
+          </ScrollView>
+          <Pressable
+            style={{
+              backgroundColor: '#4caf50',
+              paddingHorizontal: 20,
+              paddingVertical: 10,
+              borderRadius: 8,
+              marginTop: 15,
+              alignSelf: 'center',
+              minWidth: 100,
+            }}
+            onPress={onClose}
+          >
+            <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' }}>
+              关闭
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+});
+
+SafeRulesModal.displayName = 'SafeRulesModal';
+
+// Game Dialog Component - for in-game alerts (replaces Alert.alert)
+// CRITICAL: This component does NOT change screen orientation
+const GameDialog = React.memo(({ visible, title, message, onClose }: { 
+  visible: boolean; 
+  title: string;
+  message: string;
+  onClose: () => void;
+}) => {
+  // Ensure screen stays in landscape when dialog is shown
+  useEffect(() => {
+    if (visible) {
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(e => {
+        console.error('[GAME_DIALOG] Error locking orientation', e);
+      });
+    }
+  }, [visible]);
+  
+  if (!visible) return null;
+  
+  return (
+    <Modal
+      visible={true}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={onClose}
+      supportedOrientations={['landscape']}
+    >
+      <Pressable
+        style={{
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.7)',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: 20,
+        }}
+        onPress={onClose}
+      >
+        <Pressable
+          style={{
+            backgroundColor: '#1a4d2e',
+            borderRadius: 15,
+            padding: 20,
+            width: '80%',
+            maxWidth: 600,
+            borderWidth: 2,
+            borderColor: '#ffd700',
+          }}
+          onPress={(e) => e.stopPropagation()}
+        >
+          <Text style={{ 
+            color: '#ffd700', 
+            fontSize: 20, 
+            fontWeight: 'bold',
+            marginBottom: 15,
+            textAlign: 'center',
+          }}>
+            {title}
+          </Text>
+          <Text style={{ 
+            fontSize: 16, 
+            lineHeight: 24, 
+            color: '#fff',
+            textAlign: 'center',
+            marginBottom: 20,
+          }}>
+            {message}
+          </Text>
+          <Pressable
+            style={{
+              backgroundColor: '#4caf50',
+              paddingHorizontal: 30,
+              paddingVertical: 12,
+              borderRadius: 8,
+              alignSelf: 'center',
+              minWidth: 120,
+            }}
+            onPress={onClose}
+          >
+            <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' }}>
+              确定
+            </Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+});
+
+GameDialog.displayName = 'GameDialog';
 
 /**
  * Simple markdown renderer for rules content
@@ -660,6 +840,26 @@ export default function PlaygroundScreen() {
   
   // Rules modal state
   const [showRules, setShowRules] = useState(false);
+  
+  // Game dialog state (replaces Alert.alert)
+  const [gameDialog, setGameDialog] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+  }>({
+    visible: false,
+    title: '',
+    message: '',
+  });
+  
+  // Helper function to show game dialog
+  const showGameDialog = (title: string, message: string) => {
+    setGameDialog({
+      visible: true,
+      title,
+      message,
+    });
+  };
   
   // Auto-play (托管) state for player 0
   const [isAutoPlay, setIsAutoPlay] = useState(false);
@@ -1807,7 +2007,7 @@ export default function PlaygroundScreen() {
       // Check if card is a scoring card (底牌不能扣分)
       const cardPoints = getCardPoints(card);
       if (cardPoints > 0) {
-        Alert.alert('无效选择', '底牌不能扣分（不能选择 5、10、K）');
+        showGameDialog('无效选择', '底牌不能扣分（不能选择 5、10、K）');
         return;
       }
       
@@ -1848,7 +2048,7 @@ export default function PlaygroundScreen() {
   // Confirm bottom card selection - SIMPLIFIED: Treat as playing 6 cards in one trick
   const handleConfirmBottomSelection = () => {
     if (!gameState || selectedBottomCards.length !== 6) {
-      Alert.alert('选择不足', `请选择 6 张牌（当前已选择 ${selectedBottomCards.length} 张）`);
+      showGameDialog('选择不足', `请选择 6 张牌（当前已选择 ${selectedBottomCards.length} 张）`);
       return;
     }
     
@@ -2634,7 +2834,7 @@ export default function PlaygroundScreen() {
       });
     } catch (e) {
       console.error('[END_OF_HAND_EFFECT][ERROR]', e);
-      Alert.alert('End-of-hand error', String(e));
+      showGameDialog('游戏结束错误', String(e));
       // Don't re-throw to prevent crash, but log it
     }
     // CRITICAL: Remove finalScores and nextHandTributeType from dependencies
@@ -3010,7 +3210,7 @@ export default function PlaygroundScreen() {
       console.error('[PLAY_CARD][ERROR][message]', (error as Error)?.message);
       console.error('[PLAY_CARD][ERROR][stack]', (error as Error)?.stack);
       if (isHuman) {
-        Alert.alert('无效出牌', (error as Error).message);
+        showGameDialog('无效出牌', (error as Error).message);
       }
       throw error; // Re-throw to let global handler also see it
     }
@@ -3275,7 +3475,7 @@ export default function PlaygroundScreen() {
     // Safety check: ensure player0 exists
     const player0 = gameState.players[0];
     if (!player0 || !player0.hand) {
-      Alert.alert('错误', '游戏状态异常，无法出牌');
+      showGameDialog('错误', '游戏状态异常，无法出牌');
       return;
     }
     
@@ -3291,12 +3491,11 @@ export default function PlaygroundScreen() {
       allPlayersHands // Pass all players' hands to check ALL hands, not just current player
     );
     
-    // If validation fails, show system Alert and STOP - do not proceed with card play
+    // If validation fails, show game dialog and STOP - do not proceed with card play
     if (!validation.valid) {
-      Alert.alert(
+      showGameDialog(
         '甩牌失败', 
-        validation.message || '出牌不合法：请检查是否为同点数、合法顺子或其他有效组合。',
-        [{ text: '确定', style: 'default' }]
+        validation.message || '出牌不合法：请检查是否为同点数、合法顺子或其他有效组合。'
       );
       // CRITICAL: Do not clear selection, do not play cards, do not trigger animations
       // Let player choose single-card play or fix selection
@@ -3487,7 +3686,7 @@ export default function PlaygroundScreen() {
                 return newState;
               }
             } catch (error) {
-              Alert.alert('出牌失败', (error as Error).message);
+              showGameDialog('出牌失败', (error as Error).message);
               return currentState;
             }
           });
@@ -3519,7 +3718,7 @@ export default function PlaygroundScreen() {
       // Check if card is a point card (5, 10, K) - these cannot be used as bottom cards
       const isPointCard = card.rank === 5 || card.rank === 10 || card.rank === 13;
       if (isPointCard) {
-        Alert.alert('无效选择', '扣底牌不能选择 5、10、K（有分值的牌）');
+        showGameDialog('无效选择', '扣底牌不能选择 5、10、K（有分值的牌）');
         return;
       }
       
@@ -3530,7 +3729,7 @@ export default function PlaygroundScreen() {
       } else {
         // Can only select up to 6 cards
         if (selectedCards.length >= 6) {
-          Alert.alert('选择过多', '扣底牌只能选择 6 张牌');
+          showGameDialog('选择过多', '扣底牌只能选择 6 张牌');
           return;
         }
         setSelectedCards(prev => [...prev, card]);
@@ -3820,9 +4019,26 @@ export default function PlaygroundScreen() {
   if (!gameState) {
     console.log("[RENDER] showing loading screen because gameState is null/undefined");
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0d5d2f' }}>
-        <Text style={{ color: '#fff', fontSize: 18 }}>游戏加载中...</Text>
-      </View>
+      <>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0d5d2f' }}>
+          <Text style={{ color: '#fff', fontSize: 18 }}>游戏加载中...</Text>
+        </View>
+        {/* Rules Modal - must be rendered even during loading */}
+        <SafeRulesModal
+          visible={showRules}
+          onClose={() => {
+            try {
+              console.log('[RULES_MODAL] onClose called');
+              // Ensure screen stays in landscape when closing rules
+              ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+              setShowRules(false);
+            } catch (e) {
+              console.error('[RULES_MODAL] Error closing modal', e);
+            }
+          }}
+          rulesText={RULES_CN_TEXT || ''}
+        />
+      </>
     );
   }
 
@@ -4642,7 +4858,23 @@ export default function PlaygroundScreen() {
           }}>
             {/* Rules Button */}
             <Pressable
-              onPress={() => setShowRules(true)}
+              onPress={() => {
+                try {
+                  console.log('[RULES_BUTTON_PRESSED] Button clicked');
+                  // Ensure screen stays in landscape when opening rules
+                  ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+                  setShowRules(true);
+                  console.log('[OPEN_RULES_MODAL] showRules set to true');
+                } catch (e) {
+                  console.error('[RULES_BUTTON] Error opening rules modal', e);
+                  // Fallback: try to show rules anyway
+                  try {
+                    setShowRules(true);
+                  } catch (e2) {
+                    console.error('[RULES_BUTTON] Critical error, cannot open modal', e2);
+                  }
+                }
+              }}
               style={{
                 backgroundColor: 'rgba(0,0,0,0.6)',
                 paddingHorizontal: 12,
@@ -4923,61 +5155,6 @@ export default function PlaygroundScreen() {
         </View>
       )}
 
-      {/* Rules Modal */}
-      <Modal
-        visible={showRules}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowRules(false)}
-      >
-        <View style={{
-          flex: 1,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          justifyContent: 'center',
-          alignItems: 'center',
-        }}>
-          <View style={{
-            backgroundColor: '#fff',
-            borderRadius: 12,
-            padding: 16,
-            width: isLandscape ? '70%' : '85%',
-            maxHeight: '85%',
-          }}>
-            <Text style={{ 
-              color: '#000', 
-              fontSize: 20, 
-              fontWeight: 'bold',
-              marginBottom: 15,
-            }}>
-              游戏规则
-            </Text>
-            <ScrollView style={{ maxHeight: '80%' }}>
-              <Text style={{ 
-                fontSize: 14, 
-                lineHeight: 20, 
-                color: '#222',
-              }}>
-                {RULES_CN_TEXT}
-              </Text>
-            </ScrollView>
-            <TouchableOpacity
-              style={{
-                backgroundColor: '#4caf50',
-                paddingHorizontal: 16,
-                paddingVertical: 8,
-                borderRadius: 8,
-                marginTop: 15,
-                alignSelf: 'flex-end',
-              }}
-              onPress={() => setShowRules(false)}
-            >
-              <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
-                关闭
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
 
       {/* 4-Player Table Layout - Classic Horizontal Card Table */}
       <View style={{ 
@@ -6289,6 +6466,37 @@ export default function PlaygroundScreen() {
           </View>
         </View>
       )}
+      
+      {/* Rules Modal - rendered at the end to ensure it's always accessible */}
+      <SafeRulesModal
+        visible={showRules}
+        onClose={() => {
+          try {
+            console.log('[RULES_MODAL] onClose called');
+            // Ensure screen stays in landscape when closing rules
+            ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+            setShowRules(false);
+          } catch (e) {
+            console.error('[RULES_MODAL] Error closing modal', e);
+          }
+        }}
+        rulesText={RULES_CN_TEXT || ''}
+      />
+      
+      {/* Game Dialog - for in-game alerts (replaces Alert.alert) */}
+      <GameDialog
+        visible={gameDialog.visible}
+        title={gameDialog.title}
+        message={gameDialog.message}
+        onClose={() => {
+          try {
+            ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+            setGameDialog({ visible: false, title: '', message: '' });
+          } catch (e) {
+            console.error('[GAME_DIALOG] Error closing dialog', e);
+          }
+        }}
+      />
     </View>
   );
 }
