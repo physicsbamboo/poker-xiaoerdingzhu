@@ -10,6 +10,7 @@ import {
   useWindowDimensions,
   Animated,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { 
   createNewGame, 
@@ -618,6 +619,7 @@ function determineTrickWinner(
 }
 
 export default function PlaygroundScreen() {
+  const router = useRouter();
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
   
@@ -641,6 +643,8 @@ export default function PlaygroundScreen() {
   const [lastTrickWinnerIndex, setLastTrickWinnerIndex] = useState<number | null>(null);
   const [isHandFinished, setIsHandFinished] = useState(false);
   const [finalScores, setFinalScores] = useState<HandScores | null>(null);
+  // CRITICAL: Save gameConfig when hand finishes so modal can access it safely
+  const [savedGameConfig, setSavedGameConfig] = useState<GameConfig | null>(null);
   
   // End-of-hand handling: centralized guard to prevent crashes
   const hasHandledEndOfHandRef = useRef(false);
@@ -1171,12 +1175,26 @@ export default function PlaygroundScreen() {
     setIsHandFinished(false);
     setIsTrickComplete(false);
     setFinalScores(null);
+    setSavedGameConfig(null); // Reset saved config
     setShowNextTrickButton(false);
     setTrickWinner(null);
     setLastTrickWinnerIndex(null);
+    setIsBottomSelectionPhase(false); // Reset bottom selection phase
+    setBottomCards([]); // Clear bottom cards
     hasHandledEndOfHandRef.current = false; // Reset the ref
     
-    console.log("[INITIALIZE_GAME] created initial gameState, starting dealing animation");
+    console.log("[INITIALIZE_GAME] created initial gameState, starting dealing animation", {
+      phase: initialGameState.phase,
+      isDealing: true,
+      isDingZhuPhase: false,
+      hasTrumpBeenChosen: false,
+      isBottomSelectionPhase: false,
+      isHandFinished: false,
+      currentPlayerIndex: initialGameState.currentPlayerIndex,
+      playersHandSizes: initialGameState.players.map(p => p.hand.length),
+      tricksCount: initialGameState.tricks.length,
+      currentTrickLength: initialGameState.currentTrick.length,
+    });
     
     // The actual dealing and game initialization will happen in the useEffect above
   };
@@ -2325,8 +2343,16 @@ export default function PlaygroundScreen() {
       isHandFinished,
       isDingZhuPhase,
       isBottomSelectionPhase,
+      isDealing,
+      phase: gameState?.phase,
       currentPlayerIndex: gameState?.currentPlayerIndex,
     });
+
+    // CRITICAL: Check isDealing FIRST - never auto-play during dealing
+    if (isDealing) {
+      console.log('[USE_EFFECT_AUTO_PLAY] early return: isDealing=true');
+      return;
+    }
 
     // Don't auto-play if game is not ready or in a blocking phase
     // CRITICAL: Check isHandFinished FIRST to prevent any operations after game ends
@@ -2347,7 +2373,13 @@ export default function PlaygroundScreen() {
       return;
     }
     
-    // CRITICAL: isBottomSelectionPhase allows play even in DingZhu/DEAL phase
+    // CRITICAL: Never auto-play during DEAL phase (even if isDealing flag is somehow false)
+    if (gameState.phase === 'DEAL') {
+      console.log('[USE_EFFECT_AUTO_PLAY] early return: phase is DEAL');
+      return;
+    }
+
+    // CRITICAL: isBottomSelectionPhase allows play even in DingZhu phase
     // CRITICAL: In PLAY_TRICK phase, allow play even if isDingZhuPhase is true (may be stale state)
     const isInPlayPhase = gameState.phase === 'PLAY_TRICK';
     if (!isBottomSelectionPhase && !isInPlayPhase && (isDingZhuPhase || gameState.phase === 'DISCARD_BOTTOM' || isBottomRevealPhase ||
@@ -2394,6 +2426,24 @@ export default function PlaygroundScreen() {
     // Safety check: ensure player has hand array
     if (!currentPlayer.hand || !Array.isArray(currentPlayer.hand)) {
       console.warn('useEffect auto-play: Player has invalid hand', currentPlayer.id);
+      return;
+    }
+    
+    // CRITICAL: Check if we're in bottom selection phase and dealer needs to select bottom cards
+    // This must happen BEFORE any card play
+    const isFirstTrick = gameState.tricks.length === 0 && gameState.currentTrick.length === 0;
+    const isDealerTurn = gameState.currentPlayerIndex === gameState.dealerIndex;
+    const isInBottomSelection = isBottomSelectionPhase && isFirstTrick && isDealerTurn;
+    
+    if (isInBottomSelection && gameState.dealerIndex !== 0) {
+      // AI dealer needs to select bottom cards first
+      console.log('[USE_EFFECT_AUTO_PLAY] AI dealer needs to select bottom cards first', {
+        dealerIndex: gameState.dealerIndex,
+        currentPlayerIndex: gameState.currentPlayerIndex,
+        isBottomSelectionPhase,
+      });
+      // Trigger AI bottom selection - it will be handled by the separate useEffect
+      // Just return here to prevent normal card play
       return;
     }
     
@@ -2478,6 +2528,8 @@ export default function PlaygroundScreen() {
     isAutoPlay,
     isTrickComplete,
     isDingZhuPhase,
+    isBottomSelectionPhase,
+    isDealing, // CRITICAL: Add isDealing to dependencies to re-check when dealing state changes
     handFinished,
     isHandFinished,
     showNextTrickButton,
@@ -2529,8 +2581,9 @@ export default function PlaygroundScreen() {
         tricksCount: gameState?.tricks?.length,
       });
 
-      // Ensure scores are calculated if not already done
-      if (!finalScores && gameState) {
+      // Calculate scores - always calculate fresh scores from current gameState
+      let scoresCalculated = false;
+      if (gameState) {
         try {
           console.log('[END_OF_HAND_EFFECT] calculating scores');
           const scores = calculateScores(gameState);
@@ -2539,6 +2592,12 @@ export default function PlaygroundScreen() {
             nonDealerTeamPoints: scores.nonDealerTeam.totalPoints,
           });
           setFinalScores(scores);
+          scoresCalculated = true;
+          
+          // CRITICAL: Save gameConfig before updating state, so modal can access it safely
+          if (gameState.config) {
+            setSavedGameConfig(gameState.config);
+          }
           
           // Calculate tribute type for next hand based on nonDealerTeamPoints
           const nonDealerTeamPoints = scores.nonDealerTeam.totalPoints;
@@ -2559,7 +2618,7 @@ export default function PlaygroundScreen() {
       setIsHandFinished(true);
       setHandFinished(true);
       
-      // Update phase to HAND_FINISHED and clear currentTrick to prevent rendering issues
+      // Update phase to ROUND_END and clear currentTrick to prevent rendering issues
       if (gameState) {
         const finishedState: GameState = {
           ...gameState,
@@ -2570,15 +2629,18 @@ export default function PlaygroundScreen() {
       }
 
       console.log('[END_OF_HAND_EFFECT] completed successfully', {
-        finalScoresCalculated: !!finalScores,
-        nextHandTributeType,
+        finalScoresCalculated: scoresCalculated,
+        phase: gameState?.phase,
       });
     } catch (e) {
       console.error('[END_OF_HAND_EFFECT][ERROR]', e);
       Alert.alert('End-of-hand error', String(e));
       // Don't re-throw to prevent crash, but log it
     }
-  }, [isEndOfHand, allHandsEmpty, isTrickComplete, trickIsResolved, gameState, finalScores, nextHandTributeType]);
+    // CRITICAL: Remove finalScores and nextHandTributeType from dependencies
+    // We only want to run this effect once when isEndOfHand becomes true
+    // Including finalScores causes the effect to re-run when scores are set, which is not desired
+  }, [isEndOfHand, allHandsEmpty, isTrickComplete, trickIsResolved, gameState]);
 
   const handleCardPlay = (card: Card, isHuman: boolean) => {
     console.log('[PLAY_CARD] start', {
@@ -2683,19 +2745,42 @@ export default function PlaygroundScreen() {
       
       const newState = playCard(gameState, currentPlayer.id, card);
       
+      // CRITICAL: Safety check FIRST before any access
+      if (!newState || !newState.players || !Array.isArray(newState.players)) {
+        console.error('handleCardPlay: Invalid game state after playCard');
+        return;
+      }
+      
+      // CRITICAL: Check if all hands are empty BEFORE accessing player properties
+      const allHandsEmpty = newState.players.every(p => p && p.hand && p.hand.length === 0);
+      
       console.log('[PLAY_CARD] after playCard call', {
         handSizeAfter: newState.players[gameState.currentPlayerIndex]?.hand?.length,
-        allHandsEmpty: newState.players.every(p => p && p.hand && p.hand.length === 0),
-        currentTrickLength: newState.currentTrick.length,
-        tricksCount: newState.tricks.length,
+        allHandsEmpty,
+        currentTrickLength: newState.currentTrick?.length || 0,
+        tricksCount: newState.tricks?.length || 0,
         currentPlayerIndex: newState.currentPlayerIndex,
         isFirstTrick,
         isLandlord,
       });
       
-      // Safety check: ensure newState is valid
-      if (!newState || !newState.players) {
-        console.error('handleCardPlay: Invalid game state after playCard');
+      // CRITICAL: If all hands are empty, immediately mark as finished and return
+      // This prevents any further state access that might cause crashes
+      if (allHandsEmpty) {
+        console.log('[PLAY_CARD] All hands empty detected immediately after playCard');
+        setIsHandFinished(true);
+        setHandFinished(true);
+        setIsTrickComplete(true);
+        
+        // Update state with minimal safe data
+        const finishedState: GameState = {
+          ...newState,
+          phase: 'ROUND_END',
+          currentTrick: [],
+        };
+        setGameState(finishedState);
+        
+        // Let END_OF_HAND_EFFECT handle the rest
         return;
       }
       
@@ -2809,6 +2894,23 @@ export default function PlaygroundScreen() {
           return;
         }
         
+        // CRITICAL: If all cards are played, handle end-of-hand immediately
+        // This must be done BEFORE any state updates to prevent crashes
+        if (allCardsPlayed) {
+          console.log('[RESOLVE_TRICK] All cards played during trick resolution');
+          setIsHandFinished(true);
+          setHandFinished(true);
+          setIsTrickComplete(true);
+          
+          const finishedState: GameState = {
+            ...newState,
+            phase: 'ROUND_END',
+            currentTrick: [],
+          };
+          setGameState(finishedState);
+          return;
+        }
+        
         console.log('[RESOLVE_TRICK] setting trick complete state');
         // Set pause state - keep cards visible by restoring them to currentTrick
         setIsTrickComplete(true);
@@ -2818,31 +2920,36 @@ export default function PlaygroundScreen() {
         
         console.log('[RESOLVE_TRICK] creating stateWithTrickVisible');
         // Update game state but keep the trick visible for display
-        // CRITICAL: If all cards are played, we should NOT set currentTrick to avoid rendering issues
-        // Instead, clear currentTrick and let the UI handle the finished state
+        // CRITICAL: Safety checks for lastTrick.cards before mapping
+        const safeTrickCards = (lastTrick.cards && Array.isArray(lastTrick.cards))
+          ? lastTrick.cards.map(pc => {
+              // Safety check: ensure playedCard is valid
+              if (!pc || !pc.card) {
+                return null;
+              }
+              // Additional validation: ensure card has required properties
+              // Allow rank to be number OR string (for JOKER cards)
+              if (typeof pc.card.suit !== 'string') {
+                return null;
+              }
+              if (typeof pc.card.rank !== 'number' && typeof pc.card.rank !== 'string') {
+                return null;
+              }
+              if (typeof pc.playerIndex !== 'number' || pc.playerIndex < 0 || pc.playerIndex >= 4) {
+                return null;
+              }
+              return {
+                card: pc.card,
+                playerId: pc.playerId || '',
+                playerIndex: pc.playerIndex >= 0 ? pc.playerIndex : 0,
+              };
+            }).filter(pc => pc !== null) as PlayedCard[]
+          : [];
+        
         const stateWithTrickVisible: GameState = {
           ...newState,
-          currentTrick: allCardsPlayed 
-            ? [] // Clear trick if game is finished to prevent rendering issues
-            : lastTrick.cards.map(pc => {
-                // Safety check: ensure playedCard is valid
-                if (!pc || !pc.card) {
-                  return null;
-                }
-                // Additional validation: ensure card has required properties
-                if (typeof pc.card.suit !== 'string' || typeof pc.card.rank !== 'number') {
-                  return null;
-                }
-                if (typeof pc.playerIndex !== 'number' || pc.playerIndex < 0 || pc.playerIndex >= 4) {
-                  return null;
-                }
-                return {
-                  card: pc.card,
-                  playerId: pc.playerId || '',
-                  playerIndex: pc.playerIndex >= 0 ? pc.playerIndex : 0,
-                };
-              }).filter(pc => pc !== null) as PlayedCard[],
-          currentPlayerIndex: winnerIndex, // Winner leads next trick (but game is finished if allCardsPlayed)
+          currentTrick: safeTrickCards,
+          currentPlayerIndex: winnerIndex, // Winner leads next trick
         };
         
         console.log('[RESOLVE_TRICK] stateWithTrickVisible created', {
@@ -3497,7 +3604,15 @@ export default function PlaygroundScreen() {
       lastTrickWinnerIndex,
       isRuiPaiActive,
       tricksCount: gameState?.tricks?.length,
+      isDealing,
+      phase: gameState?.phase,
     });
+
+    // CRITICAL: Prevent calling during dealing phase or when phase is DEAL
+    if (isDealing || gameState?.phase === 'DEAL') {
+      console.log('[HANDLE_NEXT_TRICK] early return: dealing or DEAL phase');
+      return;
+    }
 
     if (!gameState || lastTrickWinnerIndex === null) {
       console.log('[HANDLE_NEXT_TRICK] early return: no gameState or winnerIndex');
@@ -3575,7 +3690,7 @@ export default function PlaygroundScreen() {
       // Update phase to HAND_FINISHED
       const finishedState: GameState = {
         ...updatedState,
-        phase: 'HAND_FINISHED',
+        phase: 'ROUND_END',
         currentTrick: [], // Ensure trick is cleared
       };
       setGameState(finishedState);
@@ -3587,13 +3702,14 @@ export default function PlaygroundScreen() {
 
   // Handle starting next hand - automatically determines dealer rotation based on scores
   const handleNextHand = () => {
-    if (!gameState || !finalScores) return;
+    if (!gameState || !finalScores || !matchState) return;
     
     const currentDealerIndex = matchState.matchDealerIndex!;
     const nonDealerTeamPoints = finalScores.nonDealerTeam.totalPoints;
     
-    // Automatic dealer rotation rule: if nonDealerTeamPoints > 40, dealer MUST step down
-    const dealerStepsDown = nonDealerTeamPoints > 40;
+    // Automatic dealer rotation rule: if nonDealerTeamPoints >= 40, dealer MUST step down
+    // Rule: 得分高于等于40，庄家下台
+    const dealerStepsDown = nonDealerTeamPoints >= 40;
     
     // Calculate next dealer index BEFORE updating state (to avoid async state issues)
     const nextDealerIndex = dealerStepsDown ? (currentDealerIndex + 1) % 4 : currentDealerIndex;
@@ -3632,15 +3748,31 @@ export default function PlaygroundScreen() {
       }));
     }
     
-    // Reset hand-specific state
+    // CRITICAL: Reset ALL hand-specific state BEFORE starting next hand
+    // Reset flags FIRST to prevent early return from showing ResultScreen
     setIsHandFinished(false);
     setHandFinished(false);
     setFinalScores(null);
+    setSavedGameConfig(null); // Reset saved config
     setIsTrickComplete(false);
     setLastTrickWinnerIndex(null);
     setTrickWinner(null);
     setShowNextTrickButton(false);
     setShowScoreDetails(false);
+    setIsBottomSelectionPhase(false); // Reset bottom selection phase
+    setBottomCards([]); // Clear bottom cards
+    hasHandledEndOfHandRef.current = false; // CRITICAL: Reset the end-of-hand ref
+    
+    // CRITICAL: Immediately update gameState phase to DEAL if it exists
+    // This prevents the early return check from seeing ROUND_END phase during state transition
+    if (gameState) {
+      setGameState(prev => prev ? {
+        ...prev,
+        phase: 'DEAL',
+        currentTrick: [],
+        tricks: [],
+      } : prev);
+    }
     
     // Start new hand with the calculated dealer index and tribute pairs
     // Tribute will be performed after cards are dealt and trump suit is determined
@@ -3663,7 +3795,25 @@ export default function PlaygroundScreen() {
     setPendingTributePairs([]);
     setShowScoreDetails(false);
     
+    // CRITICAL: Reset all hand-specific state
+    setIsHandFinished(false);
+    setHandFinished(false);
+    setFinalScores(null);
+    setSavedGameConfig(null);
+    setIsTrickComplete(false);
+    setLastTrickWinnerIndex(null);
+    setTrickWinner(null);
+    setShowNextTrickButton(false);
+    setIsBottomSelectionPhase(false);
+    setBottomCards([]);
+    hasHandledEndOfHandRef.current = false;
+    
     initializeGame();
+  };
+
+  const handleBackToLobby = () => {
+    // Navigate back to the home screen
+    router.back();
   };
 
   // Only show "游戏加载中" if gameState truly doesn't exist yet
@@ -3700,17 +3850,183 @@ export default function PlaygroundScreen() {
   const renderHasPlayedAtLeastOneTrick = (gameState?.tricks?.length ?? 0) > 0;
   const renderIsEndOfHand = allHandsEmpty && renderTrickIsResolved && renderHasPlayedAtLeastOneTrick;
 
-  // Short-circuit the render when the hand is finished
-  // Only show placeholder BEFORE the effect runs - after effect runs, allow normal render so Modal can show
-  if (renderIsEndOfHand && !hasHandledEndOfHandRef.current) {
+  // CRITICAL: Early return for end-of-hand - render ResultScreen only
+  // This prevents any access to trick/hand/currentPlayer data that could cause crashes
+  // FIXED: Check both phase === 'ROUND_END' AND isHandFinished === true
+  // This prevents showing ResultScreen when starting new hand (isHandFinished is false, even if phase hasn't updated yet)
+  const phase = gameState?.phase;
+  const isRoundEnd = phase === 'ROUND_END' && isHandFinished;
+  if (isRoundEnd) {
+    console.log('[RENDER] Early return - showing ResultScreen', {
+      phase: gameState?.phase,
+      isHandFinished,
+      hasFinalScores: finalScores !== null,
+    });
+    
+    // ResultScreen - only reads safe data: finalScores, matchState, savedGameConfig
+    // NEVER accesses: trick, hand, currentPlayer, currentTrick
+    // FIXED: Only show settlement banner when phase is ROUND_END AND scores are being calculated
+    if (phase === 'ROUND_END' && (!finalScores || !matchState)) {
+      // Still calculating scores, show loading
+      return (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0d5d2f' }}>
+          <Text style={{ color: '#fff', fontSize: 18 }}>本局结束，正在结算...</Text>
+        </View>
+      );
+    }
+    
+    // If phase is ROUND_END but we don't have scores yet, show loading
+    if (!finalScores || !matchState) {
+      return (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0d5d2f' }}>
+          <Text style={{ color: '#fff', fontSize: 18 }}>本局结束，正在结算...</Text>
+        </View>
+      );
+    }
+    
+    // Render ResultScreen
+    const nonDealerTeamPoints = finalScores.nonDealerTeam.totalPoints;
+    // Rule: 得分高于等于40，庄家下台
+    const dealerStepsDown = nonDealerTeamPoints >= 40;
+    const tributeText = nextHandTributeType === 'none' 
+      ? '不用进贡'
+      : nextHandTributeType === 'single'
+        ? '单进贡'
+        : '双进贡';
+    
+    return (
+      <View style={{ flex: 1, backgroundColor: '#0d5d2f', justifyContent: 'center', alignItems: 'center' }}>
+        <View style={{
+          backgroundColor: '#1a4d2e',
+          borderRadius: 15,
+          padding: 25,
+          width: '90%',
+          maxWidth: 400,
+          borderWidth: 3,
+          borderColor: '#ffd700',
+        }}>
+          <Text style={{ color: '#ffd700', fontSize: 24, fontWeight: 'bold', textAlign: 'center', marginBottom: 20 }}>
+            本局结束
+          </Text>
+          
+          <ScrollView style={{ maxHeight: '70%' }} showsVerticalScrollIndicator={true}>
+            <View style={{ marginBottom: 15 }}>
+              <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 10, textAlign: 'center' }}>
+                第 {matchState.handNumber || 1} 局结束
+              </Text>
+              
+              {/* Result Summary */}
+              <View style={{ 
+                backgroundColor: '#0d5d2f',
+                padding: 15,
+                borderRadius: 8,
+                marginBottom: 10,
+              }}>
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center', marginBottom: 8 }}>
+                  本局结果：{dealerStepsDown ? '庄家下台' : '庄家连庄'}
+                </Text>
+                <Text style={{ color: '#ffd700', fontSize: 16, fontWeight: 'bold', textAlign: 'center' }}>
+                  下一局：{tributeText}
+                </Text>
+              </View>
+              
+              {/* Score Summary */}
+              <View style={{ backgroundColor: '#0d5d2f', padding: 15, borderRadius: 8, marginBottom: 10 }}>
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold', marginBottom: 8 }}>
+                  庄家方: {finalScores.dealerTeam.totalPoints} 分
+                </Text>
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold', marginBottom: 8 }}>
+                  闲家方: {finalScores.nonDealerTeam.totalPoints} 分
+                </Text>
+              </View>
+              
+              {/* Match Totals */}
+              <View style={{ marginTop: 10, paddingTop: 15, borderTopWidth: 1, borderTopColor: '#555' }}>
+                <Text style={{ color: '#ffd700', fontSize: 14, fontWeight: 'bold', marginBottom: 10, textAlign: 'center' }}>
+                  比赛总分 (累计):
+                </Text>
+                <View style={{ backgroundColor: '#0d5d2f', padding: 12, borderRadius: 8, marginBottom: 8 }}>
+                  <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
+                    庄家方: {(matchState.dealerTeamTotal || 0) + finalScores.dealerTeam.totalPoints} 分
+                  </Text>
+                </View>
+                <View style={{ backgroundColor: '#0d5d2f', padding: 12, borderRadius: 8 }}>
+                  <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
+                    闲家方: {(matchState.nonDealerTeamTotal || 0) + finalScores.nonDealerTeam.totalPoints} 分
+                  </Text>
+                </View>
+              </View>
+            </View>
+          </ScrollView>
+          
+          {/* Action Buttons */}
+          <View style={{ marginTop: 15, borderTopWidth: 1, borderTopColor: '#555', paddingTop: 15 }}>
+            <Pressable
+              onPress={handleNextHand}
+              style={{
+                backgroundColor: '#4caf50',
+                paddingVertical: 12,
+                paddingHorizontal: 20,
+                borderRadius: 8,
+                alignItems: 'center',
+                marginBottom: 10,
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>
+                继续下一局
+              </Text>
+            </Pressable>
+            
+            <Pressable
+              onPress={handleNewGame}
+              style={{
+                backgroundColor: '#666',
+                paddingVertical: 10,
+                paddingHorizontal: 20,
+                borderRadius: 8,
+                alignItems: 'center',
+                marginBottom: 10,
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
+                新比赛
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={handleBackToLobby}
+              style={{
+                backgroundColor: '#666',
+                paddingVertical: 10,
+                paddingHorizontal: 20,
+                borderRadius: 8,
+                alignItems: 'center',
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
+                返回大厅
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  }
+  
+  // Short-circuit the render when the hand is finished but scores not yet calculated
+  // FIXED: Only show settlement banner when phase is ROUND_END, not based on flags
+  // This ensures the banner disappears immediately when phase changes to DEAL
+  if (renderIsEndOfHand && !hasHandledEndOfHandRef.current && gameState?.phase === 'ROUND_END') {
       console.log('[RENDER] end-of-hand short-circuit (waiting for effect)', {
         allHandsEmpty,
         isTrickComplete,
         trickIsResolved: renderTrickIsResolved,
         hasPlayedAtLeastOneTrick: renderHasPlayedAtLeastOneTrick,
+        phase,
       });
 
     // Render a simple placeholder while the end-of-hand effect runs
+    // Only show this when phase is actually ROUND_END
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0d5d2f' }}>
         <Text style={{ color: '#fff', fontSize: 18 }}>本局结束，正在结算...</Text>
@@ -3718,15 +4034,34 @@ export default function PlaygroundScreen() {
     );
   }
   
-  // After effect runs, if still in end-of-hand state, continue with normal render
-  // This allows the Modal (which checks isHandFinished && finalScores !== null) to be rendered
+  // CRITICAL FIX: Determine if we should skip game table rendering
+  // FIXED: Only check phase === 'ROUND_END', not flags that might persist
+  // This ensures game table renders immediately when phase changes from ROUND_END to DEAL
+  // CRITICAL FIX: Check both phase === 'ROUND_END' AND isHandFinished === true
+  // This ensures game table renders immediately when isHandFinished is false (new hand started)
+  const shouldSkipGameTable = gameState?.phase === 'ROUND_END' && isHandFinished;
   
-  const currentPlayer = gameState.players[gameState.currentPlayerIndex];
+  // CRITICAL: Safety checks when hand is finished - prevent crashes from accessing invalid gameState
+  // If shouldSkipGameTable is true, set all to null/empty to prevent any access
+  const currentPlayer = shouldSkipGameTable 
+    ? null
+    : (gameState?.players && 
+       typeof gameState.currentPlayerIndex === 'number' && 
+       gameState.currentPlayerIndex >= 0 && 
+       gameState.currentPlayerIndex < gameState.players.length)
+      ? gameState.players[gameState.currentPlayerIndex]
+      : null;
   // CRITICAL: Safety check for currentTrick - ensure it's always an array
-  const currentTrick = (gameState.currentTrick && Array.isArray(gameState.currentTrick)) 
-    ? gameState.currentTrick 
-    : [];
-  const player1 = gameState.players[0];
+  const currentTrick = shouldSkipGameTable
+    ? []
+    : (gameState?.currentTrick && Array.isArray(gameState.currentTrick)) 
+      ? gameState.currentTrick 
+      : [];
+  const player1 = shouldSkipGameTable
+    ? null
+    : (gameState?.players && gameState.players.length > 0) 
+      ? gameState.players[0] 
+      : null;
   
   // Render-level sanity check for phase transitions
   console.log('[RENDER] phases', {
@@ -3735,34 +4070,49 @@ export default function PlaygroundScreen() {
     isHandFinished,
     isTrickComplete,
     allHandsEmpty,
-    currentPlayerIndex: gameState.currentPlayerIndex,
-    dealerIndex: gameState.dealerIndex,
+    currentPlayerIndex: gameState?.currentPlayerIndex,
+    dealerIndex: gameState?.dealerIndex,
     hasTrumpBeenChosen,
     currentTrickLength: currentTrick.length,
   });
-  
+
   console.log('[RENDER] current state', {
-    currentPlayerIndex: gameState.currentPlayerIndex,
+    currentPlayerIndex: gameState?.currentPlayerIndex,
     currentTrickLength: currentTrick.length,
     allHandsEmpty,
     isHandFinished,
   });
   
-  // Safety check: ensure player1 exists
-  if (!player1) {
+  // Safety check: ensure player1 exists (but allow render if hand is finished - modal will show)
+  if (!player1 && !isHandFinished) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0d5d2f' }}>
         <Text style={{ color: '#fff' }}>游戏状态错误</Text>
       </View>
     );
   }
+  
+  // If hand is finished but scores not calculated yet, show loading
+  if (isHandFinished && !finalScores) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0d5d2f' }}>
+        <Text style={{ color: '#fff', fontSize: 18 }}>本局结束，正在结算...</Text>
+      </View>
+    );
+  }
+  
 
   // Get all cards for a player in the current trick (supports 甩牌 - multiple cards per player)
   const getTrickCards = (playerIndex: number): Card[] => {
-    // CRITICAL: If hand is finished, don't try to access trick cards
+    // CRITICAL: If hand is finished or phase is ROUND_END, don't try to access trick cards
     // This prevents crashes when state is inconsistent
-    if (isHandFinished || handFinished) {
-      console.log('[GET_TRICK_CARDS] hand finished, returning empty', { playerIndex, isHandFinished, handFinished });
+    if (isHandFinished || handFinished || gameState?.phase === 'ROUND_END') {
+      console.log('[GET_TRICK_CARDS] hand finished or ROUND_END, returning empty', { 
+        playerIndex, 
+        isHandFinished, 
+        handFinished,
+        phase: gameState?.phase 
+      });
       return [];
     }
     
@@ -4209,14 +4559,19 @@ export default function PlaygroundScreen() {
     );
   };
 
+  // CRITICAL: If hand is finished, we need to continue rendering to show the modal
+  // But we'll skip all game table rendering using shouldSkipGameTable
+  // The modal is rendered at the end of the component, so we must continue
+
   return (
     <View style={{ 
       flex: 1, 
       backgroundColor: '#0d5d2f',
-      paddingTop: gameState?.phase === 'DISCARD_BOTTOM' && gameState?.dealerIndex === 0 ? (isLandscape ? 0 : 100) : 0,
+      paddingTop: shouldSkipGameTable ? 0 : (gameState?.phase === 'DISCARD_BOTTOM' && gameState?.dealerIndex === 0 ? (isLandscape ? 0 : 100) : 0),
     }}>
       {/* Top Bar - Game info + Action buttons - Pinned to screen top */}
-      {gameState && (
+      {/* CRITICAL: Only render game table if hand is NOT finished - prevents crashes from accessing invalid gameState */}
+      {gameState && !shouldSkipGameTable && (
         <View style={{
           position: 'absolute',
           top: 0, // Always pinned to top of screen
@@ -4245,7 +4600,7 @@ export default function PlaygroundScreen() {
               </>
             ) : (
               <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold' }}>
-                主花色: {gameState.trumpSuit} | 庄家: 玩家{gameState.dealerIndex + 1}
+                主花色: {gameState?.trumpSuit || '?'} | 庄家: 玩家{(gameState?.dealerIndex ?? 0) + 1}
               </Text>
             )}
           </View>
@@ -4695,7 +5050,7 @@ export default function PlaygroundScreen() {
         {/* Hand cards container with layout measurement */}
         {/* Show hand during dealing animation OR during normal play (including ding-zhu phase) */}
         {((isDealing && dealingHands[0] && dealingHands[0].length > 0) || 
-          (player1.hand && player1.hand.length > 0)) && (
+          (player1?.hand && player1.hand.length > 0)) && (
           <View 
             onLayout={(event) => {
               const { x, y, width: handWidth } = event.nativeEvent.layout;
@@ -4713,7 +5068,7 @@ export default function PlaygroundScreen() {
             }}
           >
             {renderOverlappingHandHorizontal(
-              isDealing ? dealingHands[0] : player1.hand, 
+              isDealing ? dealingHands[0] : (player1?.hand || []), 
               true,
               0
             )}
@@ -4730,7 +5085,7 @@ export default function PlaygroundScreen() {
           // Hand width = Math.min(cardCount * overlapOffset + cardWidth, width - 40)
           // handArea1.left = (width - handWidth) / 2
           // Safety check: handle empty hand case
-          const handLength = player1.hand && player1.hand.length > 0 ? player1.hand.length : 0;
+          const handLength = player1?.hand && player1.hand.length > 0 ? player1.hand.length : 0;
           const estimatedHandWidth = handLength > 0 
             ? Math.min(handLength * overlapOffset + cardWidth, width - 40)
             : cardWidth; // Use default card width when hand is empty
@@ -5446,7 +5801,7 @@ export default function PlaygroundScreen() {
       )}
 
       {/* Card Selection Panel - Show when Player 0 is leader and has selected cards */}
-      {gameState && gameState.currentPlayerIndex === 0 && gameState.currentTrick.length === 0 && 
+      {gameState && !shouldSkipGameTable && gameState.currentPlayerIndex === 0 && gameState.currentTrick.length === 0 && 
        selectedCards.length > 0 && !isTrickComplete && !isHandFinished && (() => {
          // Check if this is the first trick (bottom card play)
          const isFirstTrick = gameState.tricks.length === 0 && gameState.currentTrick.length === 0;
@@ -5561,7 +5916,8 @@ export default function PlaygroundScreen() {
       {/* Fan cards are now highlighted within the hand - no separate overlay */}
 
       {/* Next Trick Button - Show when trick is complete (positioned separately) */}
-      {isTrickComplete && lastTrickWinnerIndex !== null && (
+      {/* CRITICAL: Only show when NOT dealing and phase is not DEAL */}
+      {isTrickComplete && lastTrickWinnerIndex !== null && !isDealing && gameState?.phase !== 'DEAL' && gameState?.tricks && gameState.tricks.length > 0 && (
         <Pressable
           onPress={handleNextTrick}
           style={{
@@ -5587,7 +5943,7 @@ export default function PlaygroundScreen() {
       )}
 
       {/* Game Info Bar - Only show in portrait or as minimal overlay */}
-      {!isLandscape && (
+      {!isLandscape && !shouldSkipGameTable && (
         <View style={{
           backgroundColor: '#1a4d2e',
           padding: 10,
@@ -5595,19 +5951,24 @@ export default function PlaygroundScreen() {
           borderTopColor: '#2d7a4d',
         }}>
           <Text style={{ color: '#fff', fontSize: 14, textAlign: 'center' }}>
-            主花色: {gameState.trumpSuit} | 庄家: 玩家{gameState.dealerIndex + 1}
+            主花色: {gameState?.trumpSuit || '?'} | 庄家: 玩家{(gameState?.dealerIndex ?? 0) + 1}
           </Text>
-          <Text style={{ color: '#ccc', fontSize: 12, textAlign: 'center', marginTop: 4 }}>
-            庄家方: {gameState.scores.dealerTeam} 分 | 闲家方: {gameState.scores.nonDealerTeam} 分
-          </Text>
+          {finalScores && (
+            <Text style={{ color: '#ccc', fontSize: 12, textAlign: 'center', marginTop: 4 }}>
+              庄家方: {finalScores.dealerTeam.totalPoints || 0} 分 | 闲家方: {finalScores.nonDealerTeam.totalPoints || 0} 分
+            </Text>
+          )}
         </View>
       )}
 
       {/* Hand Finished Modal - Result Summary */}
       <Modal
-        visible={isHandFinished && finalScores !== null}
+        visible={shouldSkipGameTable && finalScores !== null}
         transparent={true}
         animationType="fade"
+        onRequestClose={() => {
+          // Prevent modal from closing on Android back button during end-of-hand
+        }}
       >
         <View style={{
           flex: 1,
@@ -5629,7 +5990,7 @@ export default function PlaygroundScreen() {
               本局结束
             </Text>
             
-            {finalScores && (
+            {finalScores && matchState && (
               <>
                 <ScrollView style={{ maxHeight: '70%' }} showsVerticalScrollIndicator={true}>
                   {/* Concise Summary */}
@@ -5645,7 +6006,7 @@ export default function PlaygroundScreen() {
                     return (
                       <View style={{ marginBottom: 15 }}>
                         <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 10, textAlign: 'center' }}>
-                          第 {matchState.handNumber} 局结束
+                          第 {matchState?.handNumber || 1} 局结束
                         </Text>
                         
                         {/* Result Summary */}
@@ -5698,7 +6059,7 @@ export default function PlaygroundScreen() {
                                       <View key={index} style={{ marginRight: 5 }}>
                                         <CardView
                                           card={card}
-                                          isTrump={gameState ? isTrumpCard(card, gameState.config) : false}
+                                          isTrump={savedGameConfig ? isTrumpCard(card, savedGameConfig) : false}
                                         />
                                       </View>
                                     ))}
@@ -5726,7 +6087,7 @@ export default function PlaygroundScreen() {
                                       <View key={index} style={{ marginRight: 5 }}>
                                         <CardView
                                           card={card}
-                                          isTrump={gameState ? isTrumpCard(card, gameState.config) : false}
+                                          isTrump={savedGameConfig ? isTrumpCard(card, savedGameConfig) : false}
                                         />
                                       </View>
                                     ))}
@@ -5746,12 +6107,12 @@ export default function PlaygroundScreen() {
                               </Text>
                               <View style={{ backgroundColor: '#0d5d2f', padding: 12, borderRadius: 8, marginBottom: 8 }}>
                                 <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
-                                  庄家方: {matchState.dealerTeamTotal + finalScores.dealerTeam.totalPoints} 分
+                                  庄家方: {(matchState?.dealerTeamTotal || 0) + finalScores.dealerTeam.totalPoints} 分
                                 </Text>
                               </View>
                               <View style={{ backgroundColor: '#0d5d2f', padding: 12, borderRadius: 8 }}>
                                 <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
-                                  闲家方: {matchState.nonDealerTeamTotal + finalScores.nonDealerTeam.totalPoints} 分
+                                  闲家方: {(matchState?.nonDealerTeamTotal || 0) + finalScores.nonDealerTeam.totalPoints} 分
                                 </Text>
                               </View>
                             </View>
@@ -5788,10 +6149,26 @@ export default function PlaygroundScreen() {
                       paddingHorizontal: 20,
                       borderRadius: 8,
                       alignItems: 'center',
+                      marginBottom: 10,
                     }}
                   >
                     <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
                       新比赛
+                    </Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={handleBackToLobby}
+                    style={{
+                      backgroundColor: '#2196f3',
+                      paddingVertical: 10,
+                      paddingHorizontal: 20,
+                      borderRadius: 8,
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
+                      返回大厅
                     </Text>
                   </Pressable>
                 </View>
